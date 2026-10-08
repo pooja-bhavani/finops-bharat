@@ -1,0 +1,23 @@
+{
+  "name": "FinOps-Bharat",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "forwardPorts": [5173, 8000, 8080],
+  "portsAttributes": {
+    "5173": {
+      "label": "FinOps-Bharat dashboard",
+      "onAutoForward": "openBrowser"
+    },
+    "8000": {
+      "label": "FinOps-Bharat API",
+      "onAutoForward": "notify"
+    },
+    "8080": {
+      "label": "TWS Labs",
+      "onAutoForward": "notify"
+    }
+  },
+  "postCreateCommand": "npm install"
+}

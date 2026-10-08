@@ -1,0 +1,15 @@
+.git
+.devcontainer
+node_modules
+dist
+aws
+finops-bharat
+tws-labs
+*.zip
+image.png
+.env
+.env.*
+**/__pycache__
+**/*.pyc
+**/*.pem
+**/*.key
