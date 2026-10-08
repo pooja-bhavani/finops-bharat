@@ -37,4 +37,4 @@ jobs:
           environment_name: "Finops-bharat-env"
           version_label: "autodeploy-${{ github.sha }}"
           region: "ap-south-1"
-          deployment_package: "deploy-hackathon.zip"
+          deployment_package: "deploy.zip"
