@@ -1,8 +1,8 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Activity, AlertCircle, BookOpen, Check, ChevronDown, ChevronUp, Cloud, Download,
+  Activity, AlertCircle, BookOpen, Check, ChevronDown, Cloud, Download,
   ExternalLink, LayoutDashboard, LoaderCircle, RefreshCw, Search, Server, X,
-  ShieldCheck, Terminal, Trophy, Container, Tags, Workflow, Bell,
+  ShieldCheck, Trophy, Container, Tags, Workflow, Bell, Moon, Sun,
 } from 'lucide-react';
 
 const SpendChart = lazy(() => import('./SpendChart.jsx'));
@@ -79,41 +79,6 @@ function getRegionGroups(regions) {
   return groups.filter((group) => group.regions.length > 0);
 }
 
-function resolveTwsLabsUrl() {
-  const configuredUrl = import.meta.env.VITE_TWS_LABS_URL?.trim();
-  const hostname = window.location.hostname;
-  const isLocalhost = ['localhost', '127.0.0.1', '[::1]'].includes(hostname);
-  let candidate = configuredUrl || '';
-
-  if (!candidate && import.meta.env.DEV) {
-    if (isLocalhost) {
-      candidate = `http://${hostname}:8080`;
-    } else if (window.location.protocol === 'https:') {
-      const codespacesHost = hostname.replace(/-\d+\.app\.github\.dev$/, '-8080.app.github.dev');
-      if (codespacesHost !== hostname) {
-        candidate = `https://${codespacesHost}`;
-      }
-    }
-  }
-
-  if (!candidate) return { url: '', invalid: false };
-  try {
-    const url = new URL(candidate, window.location.origin);
-    const localHttp = import.meta.env.DEV
-      && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
-      && url.protocol === 'http:'
-      && window.location.hostname === url.hostname;
-    const secureRemote = url.protocol === 'https:';
-    if ((localHttp || secureRemote) && url.origin !== window.location.origin) {
-      return { url: url.href.replace(/\/+$/, ''), invalid: false };
-    }
-  } catch {
-    return { url: '', invalid: Boolean(configuredUrl) };
-  }
-  return { url: '', invalid: Boolean(configuredUrl) };
-}
-
-const { url: twsLabsUrl, invalid: invalidTwsLabsUrl } = resolveTwsLabsUrl();
 
 const learningLessons = [
   {
@@ -181,9 +146,50 @@ function formatMoney(amount, currency) {
   }
 }
 
+// ---- Light / dark theme -------------------------------------------------------------------
+// Dark mode inverts the rendered page (and flips hues back), then restores images and the logo.
+// It works with any stylesheet, so no individual colour has to be redefined.
+const THEME_KEY = 'finops-theme';
+const THEME_CSS = `
+html[data-theme="dark"] { filter: invert(0.93) hue-rotate(180deg); background: #ffffff; }
+html[data-theme="dark"] img,
+html[data-theme="dark"] video,
+html[data-theme="dark"] canvas,
+html[data-theme="dark"] iframe,
+html[data-theme="dark"] .brand-mark { filter: invert(1) hue-rotate(180deg); }
+`;
+
+function readTheme() {
+  try {
+    const saved = window.localStorage.getItem(THEME_KEY);
+    if (saved === 'dark' || saved === 'light') return saved;
+  } catch { /* storage can be blocked; fall through */ }
+  try {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  } catch {
+    return 'light';
+  }
+}
+
+function ThemeToggle() {
+  const [theme, setTheme] = useState(readTheme);
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+  const toggle = () => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    try { window.localStorage.setItem(THEME_KEY, next); } catch { /* per-visit only */ }
+  };
+  const label = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+  return <button type="button" className="secondary-button theme-toggle" onClick={toggle} aria-label={label} title={label}>
+    {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+    {theme === 'dark' ? 'Light' : 'Dark'}
+  </button>;
+}
+
 function App() {
   const [page, setPage] = useState('overview');
-  const [terminalOpen, setTerminalOpen] = useState(false);
   const [account, setAccount] = useState(null);
   const [regionData, setRegionData] = useState([]);
   const [region, setRegion] = useState('');
@@ -206,11 +212,14 @@ function App() {
   const [moduleLoading, setModuleLoading] = useState(false);
   const [moduleAction, setModuleAction] = useState('');
   const [moduleResults, setModuleResults] = useState({});
-  const [pullNumber, setPullNumber] = useState('');
   const [parkingEnvironment, setParkingEnvironment] = useState('Dev');
   const [parkingEnabled, setParkingEnabled] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookSettingsOpen, setWebhookSettingsOpen] = useState(false);
+  const [connection, setConnection] = useState({ connected: false, role_arn: '', server_account_enabled: true, loaded: false });
+  const [connectRequest, setConnectRequest] = useState(0);
+  // Open-to-everyone mode: nothing is shown (and nothing is requested) until the visitor connects their own account.
+  const needsConnection = connection.loaded && !connection.connected && !connection.server_account_enabled;
   const moduleRegion = region === 'all'
     ? account?.region || regionData[0]?.id || ''
     : region;
@@ -263,7 +272,6 @@ function App() {
     setModuleErrors({});
     setModuleResults({});
     const endpoints = {
-      cicd: `/api/cicd/audit?region=${encodeURIComponent(moduleRegion)}`,
       kubernetes: `/api/k8s/inventory?region=${encodeURIComponent(moduleRegion)}`,
       ecr: `/api/ecr/audit?region=${encodeURIComponent(moduleRegion)}`,
       tags: `/api/governance/tags?region=${encodeURIComponent(moduleRegion)}`,
@@ -336,35 +344,57 @@ function App() {
     }
   }, [runScan]);
 
-  useEffect(() => {
-    let active = true;
-    requestJson('/api/aws/account').then((data) => {
-      if (active) setAccount(data);
-    }).catch((error) => {
-      if (active) setAccountError(error.message);
-    });
-    setCostLoading(true);
-    requestJson('/api/aws/costs').then((data) => {
-      if (active) setCosts(data);
-    }).catch((error) => {
-      if (active) setCostError(error.message);
-    }).finally(() => {
-      if (active) setCostLoading(false);
-    });
-    requestJson('/api/aws/regions').then((data) => {
-      if (!active) return;
+  const loadAll = useCallback(async () => {
+    setScan(null);
+    setRegionError('');
+    loadAccount();
+    loadCosts();
+    try {
+      const data = await requestJson('/api/aws/regions');
       const nextRegions = data.regions || [];
-      const configuredRegion = data.configured_region || nextRegions[0]?.id || '';
+      const configured = data.configured_region || nextRegions[0]?.id || '';
       setRegionData(nextRegions);
-      setRegion(configuredRegion);
-      if (configuredRegion) {
-        runScan(configuredRegion);
-      }
-    }).catch((error) => {
-      if (active) setRegionError(error.message);
-    });
-    return () => { active = false; };
-  }, [runScan]);
+      setRegion(configured);
+      if (configured) runScan(configured);
+    } catch (error) {
+      setRegionError(error.message);
+    }
+  }, [loadAccount, loadCosts, runScan]);
+
+  useEffect(() => {
+    requestJson('/api/connect/status')
+      .then((status) => {
+        setConnection({ ...status, loaded: true });
+        if (status.connected || status.server_account_enabled) loadAll();
+      })
+      .catch(() => {
+        setConnection((current) => ({ ...current, loaded: true }));
+        loadAll();
+      });
+  }, [loadAll]);
+
+  const handleConnected = (info) => {
+    setConnection((current) => ({ ...current, connected: true, role_arn: info.role_arn, loaded: true }));
+    setCloudOps({});
+    loadAll();
+    setToast(`Connected to AWS account ${info.account_id}.`);
+    window.setTimeout(() => setToast(''), 3000);
+  };
+
+  const disconnect = async () => {
+    await requestJson('/api/connect/disconnect', { method: 'POST' }).catch(() => {});
+    setConnection((current) => ({ ...current, connected: false, role_arn: '' }));
+    setToast('');
+    setCloudOps({});
+    if (connection.server_account_enabled) {
+      loadAll();
+      return;
+    }
+    // Nothing from the account that was just disconnected may stay on screen.
+    setAccount(null); setCosts(null); setScan(null); setRegionData([]); setRegion('');
+    setAccountError(''); setCostError(''); setScanError(''); setRegionError('');
+    setModuleErrors({}); setModuleResults({});
+  };
 
   useEffect(() => {
     if (!account?.account_id) return;
@@ -441,6 +471,7 @@ function App() {
   const pageTitle = navigation.find((item) => item.id === page)?.label || 'Overview';
 
   return <div className="app-shell">
+    <style>{THEME_CSS}</style>
     <aside className="sidebar">
       <a className="brand" href="/" aria-label="FinOps-Bharat home">
         <span className="brand-mark"><Cloud size={20} /></span>
@@ -450,8 +481,8 @@ function App() {
       <div className="workspace-select account-identity" aria-live="polite">
         <span className="workspace-avatar"><Cloud size={16} /></span>
         <span className="workspace-copy">
-          <strong>{account ? `Account ${account.account_id}` : 'AWS account unavailable'}</strong>
-          <small>{account ? account.region : accountError || 'Checking server identity…'}</small>
+          <strong>{account ? `Account ${account.account_id}` : needsConnection ? 'Not connected' : 'AWS account unavailable'}</strong>
+          <small>{account ? (region === 'all' ? 'All regions' : (region || account.region)) : needsConnection ? 'Connect your AWS account' : accountError || 'Checking server identity…'}</small>
         </span>
       </div>
       <div className="nav-label">CLOUD</div>
@@ -472,9 +503,13 @@ function App() {
         <div className="breadcrumb"><span>AWS</span><span className="crumb-slash">/</span><strong>{pageTitle}</strong></div>
         <div className="topbar-right">
           {account && <span className="account-badge"><span /> LIVE · {account.account_id}</span>}
-          <button className="connect-button terminal-toggle" aria-expanded={terminalOpen} onClick={() => setTerminalOpen((open) => !open)}>
-            <Terminal size={15} /> {terminalOpen ? 'Close terminal' : 'Open terminal'}
-          </button>
+          <ThemeToggle />
+          <ConnectAwsButton
+            connected={connection.connected}
+            onConnected={handleConnected}
+            onDisconnect={disconnect}
+            openRequest={connectRequest}
+          />
           <button className="connect-button" disabled={scanLoading || !region} onClick={() => runScan(region)}>
             {scanLoading ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
             {scanLoading ? 'Scanning AWS' : 'Refresh inventory'}
@@ -482,7 +517,8 @@ function App() {
         </div>
       </header>
 
-      {page === 'overview' && <Overview
+      {needsConnection && <ConnectWelcome onConnect={() => setConnectRequest((n) => n + 1)} />}
+      {!needsConnection && page === 'overview' && <Overview
         account={account}
         accountError={accountError}
         costs={costs}
@@ -494,13 +530,15 @@ function App() {
         scanError={scanError}
         scanLoading={scanLoading}
         region={region}
+        regionData={regionData}
+        onRegionChange={handleRegionChange}
         regionError={regionError}
         onOpenInventory={() => setPage('inventory')}
         onScan={() => runScan(region)}
         onRetryAccount={loadAccount}
         onRetryCosts={loadCosts}
       />}
-      {page === 'inventory' && <Inventory
+      {!needsConnection && page === 'inventory' && <Inventory
         account={account}
         resources={visibleResources}
         allResources={scan?.resources || []}
@@ -522,15 +560,13 @@ function App() {
         onScan={() => runScan(region)}
         onExport={exportCsv}
       />}
-      {page === 'devops' && <DevOpsGovernance
+      {!needsConnection && page === 'devops' && <DevOpsGovernance
         region={region}
         cloudOps={cloudOps}
         errors={moduleErrors}
         loading={moduleLoading}
         action={moduleAction}
         results={moduleResults}
-        pullNumber={pullNumber}
-        setPullNumber={setPullNumber}
         parkingEnvironment={parkingEnvironment}
         setParkingEnvironment={setParkingEnvironment}
         parkingEnabled={parkingEnabled}
@@ -540,11 +576,6 @@ function App() {
         webhookSettingsOpen={webhookSettingsOpen}
         setWebhookSettingsOpen={setWebhookSettingsOpen}
         onRefresh={loadCloudOps}
-        onCleanupPlan={() => postModuleAction('cleanup-plan', '/api/cicd/cleanup', {
-          region: moduleRegion,
-          volume_ids: (cloudOps.cicd?.stale_unattached_ebs || []).map((volume) => volume.volume_id),
-        })}
-        onCostCheck={() => postModuleAction('cost-check', '/api/cicd/cost-check', { pull_number: Number(pullNumber) })}
         onParkingPlan={() => postModuleAction('parking-plan', '/api/governance/park-schedule', {
           region: moduleRegion,
           environment: parkingEnvironment,
@@ -560,7 +591,7 @@ function App() {
           })),
         })}
       />}
-      {page === 'containers' && <ContainersPage
+      {!needsConnection && page === 'containers' && <ContainersPage
         region={moduleRegion}
         kubernetes={cloudOps.kubernetes}
         ecr={cloudOps.ecr}
@@ -577,7 +608,7 @@ function App() {
           })),
         })}
       />}
-      {page === 'learn' && <LearningGuide
+      {!needsConnection && page === 'learn' && <LearningGuide
         account={account}
         costs={costs}
         resources={scan?.resources || []}
@@ -602,23 +633,17 @@ function App() {
       />}
       <footer className="footer"><span>FinOps-Bharat</span><span>Live AWS, GitHub & webhook integrations · review-only AWS actions</span></footer>
     </main>
-    {terminalOpen && <TwsLabsDrawer
-      url={twsLabsUrl}
-      invalidUrl={invalidTwsLabsUrl}
-      onClose={() => setTerminalOpen(false)}
-    />}
     {toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}
   </div>;
 }
 
 function DevOpsGovernance({
-  region, cloudOps, errors, loading, action, results, pullNumber, setPullNumber,
+  region, cloudOps, errors, loading, action, results,
   parkingEnvironment, setParkingEnvironment, parkingEnabled, setParkingEnabled,
   webhookUrl, setWebhookUrl, webhookSettingsOpen, setWebhookSettingsOpen,
-  onRefresh, onCleanupPlan, onCostCheck, onParkingPlan,
+  onRefresh, onParkingPlan,
   onTagAlert, onWebhookTest, onPlanEcrCleanup,
 }) {
-  const disks = cloudOps.cicd?.stale_unattached_ebs || [];
   const tagAudit = cloudOps.tags;
   const alerts = cloudOps.alerts?.alerts || [];
   return <div className="page-wrap devops-page">
@@ -630,25 +655,6 @@ function DevOpsGovernance({
     />
 
     <section className="governance-grid">
-      <article className="panel governance-card">
-        <div className="panel-heading"><div><h2><Workflow size={16} /> CI/CD waste & runner disks</h2><p>Unattached EBS older than 24 hours · {region}</p></div></div>
-        <ErrorPanel message={errors.cicd || errors['cleanup-plan']} />
-        <div className="module-stat"><strong>{cloudOps.cicd ? disks.length : loading ? '…' : 'Unavailable'}</strong><span>stale unattached disks</span></div>
-        <ul className="module-list">{disks.slice(0, 8).map((disk) => <li key={disk.volume_id}><code>{disk.volume_id}</code><span>{disk.size_gib} GiB · {disk.age_hours} h</span>{disk.runner_tagged && <span className="governance-badge governance-clickops">Runner tag</span>}</li>)}</ul>
-        {cloudOps.cicd && !disks.length && <p className="module-empty">No unattached EBS volumes older than 24 hours were returned by AWS.</p>}
-        {cloudOps.cicd && <p className="module-note">{cloudOps.cicd.docker_volume_note}</p>}
-        <button className="secondary-button" disabled={!disks.length || Boolean(action)} onClick={onCleanupPlan}>
-          {action === 'cleanup-plan' ? 'Checking live candidates…' : 'Review ephemeral disk cleanup plan'}
-        </button>
-        {results['cleanup-plan'] && <p className="module-result" role="status">{results['cleanup-plan'].candidate_volume_ids.length} currently eligible disk(s). No volumes were deleted.</p>}
-        <form className="module-inline-form" onSubmit={(event) => { event.preventDefault(); onCostCheck(); }}>
-          <label>GitHub pull request <input type="number" min="1" value={pullNumber} onChange={(event) => setPullNumber(event.target.value)} required /></label>
-          <button className="secondary-button" type="submit" disabled={!pullNumber || Boolean(action)}>Post live cost review</button>
-        </form>
-        <ErrorPanel message={errors['cost-check']} />
-        {results['cost-check'] && <p className="module-result" role="status">Cost review posted to PR #{results['cost-check'].pull_request_number}; the PR delta is explicitly unquantified without a reviewed plan and pricing data.</p>}
-      </article>
-
       <ContainersEcrPanel kubernetes={cloudOps.kubernetes} ecr={cloudOps.ecr} errors={errors} loading={loading} region={region} action={action} results={results} onPlanEcrCleanup={onPlanEcrCleanup} />
 
       <article className="panel governance-card">
@@ -759,110 +765,341 @@ function ContainersEcrPanel({ kubernetes, ecr, errors, loading, region, action, 
   </article>;
 }
 
-function TwsLabsDrawer({ url, invalidUrl, onClose }) {
-  const [height, setHeight] = useState(220);
-  const [isMinimized, setIsMinimized] = useState(false);
-  const [isResizing, setIsResizing] = useState(false);
-  const dragStart = useRef(null);
-  const resizeTo = useCallback((clientY) => {
-    if (!dragStart.current) return;
-    const nextHeight = Math.max(45, Math.min(550, dragStart.current.height + dragStart.current.clientY - clientY));
-    if (nextHeight < 60) {
-      setHeight(45);
-      setIsMinimized(true);
-    } else {
-      setHeight(nextHeight);
-      setIsMinimized(false);
-    }
-  }, []);
-  const stopResizing = useCallback(() => {
-    dragStart.current = null;
-    setIsResizing(false);
-  }, []);
-
-  useEffect(() => {
-    const onMouseMove = (event) => resizeTo(event.clientY);
-    const onTouchMove = (event) => {
-      if (event.touches[0]) resizeTo(event.touches[0].clientY);
-    };
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', stopResizing);
-    window.addEventListener('touchmove', onTouchMove);
-    window.addEventListener('touchend', stopResizing);
-    window.addEventListener('touchcancel', stopResizing);
-    return () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', stopResizing);
-      window.removeEventListener('touchmove', onTouchMove);
-      window.removeEventListener('touchend', stopResizing);
-      window.removeEventListener('touchcancel', stopResizing);
-    };
-  }, [resizeTo, stopResizing]);
-
-  const startResizing = (clientY) => {
-    dragStart.current = { clientY, height };
-    setIsResizing(true);
-  };
-  const toggleMinimized = () => {
-    const minimized = !isMinimized;
-    setIsMinimized(minimized);
-    setHeight(minimized ? 45 : 220);
-  };
-
-  return <section
-    className={`tws-drawer ${isMinimized ? 'tws-drawer-minimized' : ''} ${isResizing ? 'tws-drawer-resizing' : ''}`}
-    style={{ height: `${height}px` }}
-    aria-label="TWS Labs terminal sandbox"
-  >
-    <div
-      className="terminal-drag-handle"
-      role="separator"
-      aria-label="Resize terminal panel"
-      aria-orientation="horizontal"
-      onMouseDown={(event) => {
-        if (event.button === 0) startResizing(event.clientY);
-      }}
-      onTouchStart={(event) => {
-        if (event.touches[0]) startResizing(event.touches[0].clientY);
-      }}
-    ><span className="drag-pill" /></div>
-    <header className="tws-drawer-header">
-      <div><Terminal size={17} /><strong>Linux sandbox</strong><span>Independent TWS Labs service · never enter production credentials</span></div>
-      <div className="tws-drawer-actions">
-        {url && <a href={url} target="_blank" rel="noreferrer">Open separately <ExternalLink size={13} /></a>}
-        <button type="button" onClick={toggleMinimized} aria-label={isMinimized ? 'Expand terminal' : 'Collapse terminal'}>
-          {isMinimized ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
-        </button>
-        <button type="button" onClick={onClose} aria-label="Close terminal"><X size={15} /> Close</button>
-      </div>
-    </header>
-    {invalidUrl
-      ? <div className="live-error" role="alert"><AlertCircle size={17} /><span>VITE_TWS_LABS_URL must use a separate HTTPS origin (HTTP is allowed only for localhost development).</span></div>
-      : url
-        ? <iframe
-          className="tws-terminal-frame"
-          src={url}
-          title="TWS Labs Linux terminal sandbox"
-          loading="lazy"
-          sandbox="allow-scripts allow-same-origin allow-forms allow-downloads"
-          referrerPolicy="no-referrer"
-          allow="clipboard-read; clipboard-write"
-        />
-        : <div className="tws-drawer-setup">
-          <p>Set <code>VITE_TWS_LABS_URL</code> to a separately hosted TWS Labs service. Localhost and GitHub Codespaces development URLs are detected automatically and mapped to port 8080.</p>
-          <a href="https://github.com/TrainWithShubham/tws-labs" target="_blank" rel="noreferrer">TWS Labs repository and setup instructions <ExternalLink size={13} /></a>
-        </div>}
-  </section>;
-}
-
 function ErrorPanel({ message, onRetry }) {
   if (!message) return null;
   return <div className="live-error" role="alert"><AlertCircle size={17} /><span>{message}</span>{onRetry && <button onClick={onRetry}>Retry</button>}</div>;
 }
 
+// Visitors may type just their 12-digit AWS account ID; the role name is fixed, so the ARN can be built.
+function toRoleArn(value, roleName = 'FinOpsBharatReadOnly') {
+  const trimmed = String(value || '').trim();
+  return /^\d{12}$/.test(trimmed) ? `arn:aws:iam::${trimmed}:role/${roleName}` : trimmed;
+}
+
+function ConnectWelcome({ onConnect }) {
+  return <div className="page-wrap">
+    <PageHeading
+      eyebrow="WELCOME"
+      title="Connect your AWS account to begin."
+      description="FinOps-Bharat scans your own AWS account through a read-only IAM role that you create. No access keys are shared, and nothing in your account is ever changed."
+      action={<button className="primary-button" onClick={onConnect}><Cloud size={16} /> Connect AWS</button>}
+    />
+    <section className="panel" style={{ padding: '22px 26px' }}>
+      <h2 style={{ margin: '0 0 12px', fontSize: '15px' }}>How it works</h2>
+      <ol className="module-note" style={{ display: 'grid', gap: '8px', paddingLeft: '20px' }}>
+        <li>Click <strong>Connect AWS</strong> and launch the one-click CloudFormation stack in your own AWS account.</li>
+        <li>Copy the role ARN from the stack’s Outputs tab and paste it here.</li>
+        <li>Choose any AWS region, or all regions, and scan. You only ever see your own account’s data.</li>
+      </ol>
+      <p className="live-note">You can disconnect at any time with Disconnect AWS, or by deleting the stack in your AWS account.</p>
+    </section>
+  </div>;
+}
+
+function ConnectAwsButton({ connected, onConnected, onDisconnect, openRequest = 0 }) {
+  const [isOpen, setIsOpen] = useState(false);
+  useEffect(() => { if (openRequest > 0) setIsOpen(true); }, [openRequest]);
+  const [info, setInfo] = useState(null);
+  const [roleArn, setRoleArn] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen || info) return;
+    requestJson('/api/connect/start', { method: 'POST' })
+      .then(setInfo)
+      .catch((e) => setError(e.message));
+  }, [isOpen, info]);
+
+  const launchUrl = info
+    ? 'https://console.aws.amazon.com/cloudformation/home#/stacks/quickcreate'
+      + `?stackName=FinOpsBharatReadOnly&templateURL=${encodeURIComponent(info.template_url)}`
+      + `&param_TrustedAccountId=${info.trusted_account_id}&param_ExternalId=${info.external_id}`
+    : '';
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const result = await requestJson('/api/connect/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role_arn: toRoleArn(roleArn, info?.role_name) }),
+      });
+      setIsOpen(false);
+      setRoleArn('');
+      onConnected(result);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <>
+    {connected
+      ? <button className="connect-button" onClick={onDisconnect}><Cloud size={16} /> Disconnect AWS</button>
+      : <button className="connect-button" onClick={() => setIsOpen(true)}><Cloud size={16} /> Connect AWS</button>}
+
+    {isOpen && <div className="modal-backdrop" role="presentation"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) setIsOpen(false); }}>
+      <section className="webhook-modal panel" role="dialog" aria-modal="true" aria-labelledby="connect-title">
+        <div className="panel-heading">
+          <div>
+            <h2 id="connect-title">Connect your AWS account</h2>
+            <p>Read-only access via an IAM role you create. No access keys are shared.</p>
+          </div>
+          <button className="icon-button" aria-label="Close" onClick={() => setIsOpen(false)}><X size={17} /></button>
+        </div>
+
+        {info
+          ? <ol className="module-note" style={{ display: 'grid', gap: '6px', paddingLeft: '20px', margin: '0 0 14px' }}>
+              <li>
+                <a href={launchUrl} target="_blank" rel="noreferrer">Launch CloudFormation stack <ExternalLink size={13} /></a>
+                {' '}in your AWS account. Leave the <strong>Permissions</strong> box empty, tick the IAM acknowledgement box at the bottom, and click <strong>Create stack</strong>.
+              </li>
+              <li>Wait until the stack status shows <strong>CREATE_COMPLETE</strong>.</li>
+              <li>Type your <strong>12-digit AWS account ID</strong> below (shown at the top right of the AWS console). Or open the stack&apos;s <strong>Outputs</strong> tab and paste the <strong>RoleArn</strong> value. It ends with <code>:role/{info.role_name || 'FinOpsBharatReadOnly'}</code>.</li>
+              <li>Click <strong>Verify &amp; connect</strong>.</li>
+            </ol>
+          : <p className="module-note">Preparing your secure setup…</p>}
+        {info && <details className="module-note" style={{ margin: '0 0 14px' }}>
+          <summary>Already created the role before, or connecting from a new browser?</summary>
+          <p>Each browser gets its own External ID. If your existing role was created with a different one, open <strong>CloudFormation → Stacks → FinOpsBharatReadOnly → Update stack → Make a direct update → Use existing template</strong>, set <strong>ExternalId</strong> to <code>{info.external_id}</code>, and finish the update. Then click <strong>Verify &amp; connect</strong>.</p>
+        </details>}
+
+        <form onSubmit={submit}>
+          <label>Your AWS account ID or role ARN
+            <input value={roleArn} onChange={(e) => setRoleArn(e.target.value)} required
+              autoComplete="off" pattern="(\d{12}|arn:aws:iam::\d{12}:role/.+)"
+              placeholder="12-digit account ID, or arn:aws:iam::<account-id>:role/FinOpsBharatReadOnly" />
+          </label>
+          {error && <div className="live-error" role="alert"><span>{error}</span></div>}
+          <div className="modal-actions">
+            <button className="secondary-button" type="button" onClick={() => setIsOpen(false)}>Cancel</button>
+            <button className="primary-button" type="submit" disabled={!info || !roleArn || busy}>
+              {busy ? 'Verifying…' : 'Verify & connect'}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>}
+  </>;
+}
+
+function ResourceMixChart({ resources, region }) {
+  const counts = new Map();
+  resources.forEach((resource) => {
+    const key = resource.service || resource.category || resource.type || 'Other';
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  const rows = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  if (!rows.length) return null;
+  const max = rows[0][1];
+  const idle = resources.filter((resource) => resource.is_waste_candidate).length;
+  return <div style={{ marginTop: '22px', paddingTop: '18px', borderTop: '1px solid #e2e6df' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '12px', marginBottom: '14px', flexWrap: 'wrap' }}>
+      <strong style={{ fontSize: '13px', color: '#2c362f' }}>Resources by service</strong>
+      <small style={{ color: '#858d85', fontSize: '11px' }}>{resources.length} observed in {region} · {idle} idle candidate{idle === 1 ? '' : 's'}</small>
+    </div>
+    <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: '10px' }} aria-label="Observed resources by AWS service">
+      {rows.map(([name, count]) => <li key={name} style={{ display: 'grid', gridTemplateColumns: '120px 1fr 32px', alignItems: 'center', gap: '12px', fontSize: '12px', color: '#424c44' }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+        <span style={{ height: '10px', background: '#eef1ec', borderRadius: '5px', overflow: 'hidden' }}>
+          <span style={{ display: 'block', height: '100%', width: `${Math.max(6, (count / max) * 100)}%`, background: '#3c8062', borderRadius: '5px' }} />
+        </span>
+        <strong style={{ textAlign: 'right', color: '#2c362f' }}>{count}</strong>
+      </li>)}
+    </ul>
+    <p className="live-note">Live inventory counts from the read-only scan. Spend values appear here once Cost Explorer returns billing data.</p>
+  </div>;
+}
+
+// ---- AWS Resource Metrics panel (live Cost Explorer + CloudWatch data for the connected account) ----
+const MT = {
+  tile: 'rgba(0,0,0,0.02)', line: 'rgba(0,0,0,0.10)', text: 'currentColor', muted: '#6b756d',
+  green: '#2e9e62', blue: '#2a8dc0', track: 'rgba(0,0,0,0.09)',
+};
+
+function moneyShort(amount, currency) {
+  const n = Math.abs(Number(amount)) < 0.005 ? 0 : Number(amount);   // avoids "-US$0"
+  return formatMoney(n, currency).replace(/\.00$/, '');
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value >= 1e12) return `${(value / 1e12).toFixed(2)} TB`;
+  if (value >= 1e9) return `${(value / 1e9).toFixed(2)} GB`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(1)} MB`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(0)} KB`;
+  return `${Math.round(value)} B`;
+}
+
+function smoothPath(points) {
+  if (points.length < 2) return '';
+  let d = `M${points[0][0]},${points[0][1]}`;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const p0 = points[i - 1] || points[i];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[i + 2] || p2;
+    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6];
+    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6];
+    d += ` C${c1[0].toFixed(1)},${c1[1].toFixed(1)} ${c2[0].toFixed(1)},${c2[1].toFixed(1)} ${p2[0]},${p2[1]}`;
+  }
+  return d;
+}
+
+function EcTwoLineChart({ days, currency }) {
+  const [hover, setHover] = useState(null);
+  const W = 560; const H = 175; const L = 50; const R = 38; const T = 10; const B = 26;
+  const iw = W - L - R; const ih = H - T - B;
+  const maxCost = Math.max(...days.map((d) => d.cost), 0.01) * 1.15;
+  const maxHours = Math.max(...days.map((d) => d.hours), 1) * 1.15;
+  const x = (i) => L + (days.length === 1 ? iw / 2 : (i * iw) / (days.length - 1));
+  const costPts = days.map((d, i) => [x(i), T + ih - (d.cost / maxCost) * ih]);
+  const hourPts = days.map((d, i) => [x(i), T + ih - (d.hours / maxHours) * ih]);
+  const area = (pts) => `${smoothPath(pts)} L${pts.at(-1)[0]},${T + ih} L${pts[0][0]},${T + ih} Z`;
+  const fine = maxCost < 1;   // tiny amounts need more decimals or every axis label reads the same
+  const money = (v) => {
+    try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, minimumFractionDigits: fine ? 3 : 0, maximumFractionDigits: fine ? 3 : 2 }).format(v); } catch { return `${v.toFixed(fine ? 3 : 0)} ${currency}`; }
+  };
+  const day = (d) => new Date(`${d}T00:00:00`).toLocaleDateString(undefined, { weekday: 'short' });
+  const active = hover == null ? null : days[hover];
+  return <div style={{ position: 'relative' }}>
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }} role="img" aria-label="Daily EC2 running hours and cost for the last seven days">
+      <defs>
+        <linearGradient id="mt-g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={MT.green} stopOpacity="0.38" /><stop offset="1" stopColor={MT.green} stopOpacity="0.02" /></linearGradient>
+        <linearGradient id="mt-g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={MT.blue} stopOpacity="0.30" /><stop offset="1" stopColor={MT.blue} stopOpacity="0.02" /></linearGradient>
+      </defs>
+      {[0, 1, 2, 3, 4].map((i) => {
+        const y = T + (ih * i) / 4;
+        return <g key={i}>
+          <line x1={L} x2={W - R} y1={y} y2={y} stroke={MT.line} strokeWidth="1" />
+          <text x={L - 8} y={y + 4} textAnchor="end" fontSize="10" fill={MT.muted}>{money(maxCost * (1 - i / 4))}</text>
+          <text x={W - R + 8} y={y + 4} fontSize="10" fill={MT.muted}>{Math.round(maxHours * (1 - i / 4))}h</text>
+        </g>;
+      })}
+      <path d={area(hourPts)} fill="url(#mt-g2)" />
+      <path d={area(costPts)} fill="url(#mt-g1)" />
+      <path d={smoothPath(hourPts)} fill="none" stroke={MT.blue} strokeWidth="2" strokeLinecap="round" />
+      <path d={smoothPath(costPts)} fill="none" stroke={MT.green} strokeWidth="2" strokeLinecap="round" />
+      {days.map((d, i) => <g key={d.date} onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}>
+        <rect x={x(i) - 20} y={T} width="40" height={ih} fill="transparent" />
+        <text x={x(i)} y={H - 7} textAnchor="middle" fontSize="10.5" fill={hover === i ? MT.text : MT.muted}>{day(d.date)}</text>
+        <circle cx={hourPts[i][0]} cy={hourPts[i][1]} r={hover === i ? 5 : 3.5} fill="#ffffff" stroke={MT.blue} strokeWidth="2" />
+        <circle cx={costPts[i][0]} cy={costPts[i][1]} r={hover === i ? 5 : 3.5} fill="#ffffff" stroke={MT.green} strokeWidth="2" />
+        <title>{`${d.date}: ${money(d.cost)} · ${Math.round(d.hours)} running hours`}</title>
+      </g>)}
+    </svg>
+    {active && <div style={{ position: 'absolute', top: 4, left: '50%', transform: 'translateX(-50%)', background: '#ffffff', border: `1px solid ${MT.line}`, boxShadow: '0 2px 8px rgba(0,0,0,0.12)', borderRadius: 8, padding: '5px 10px', fontSize: 12, pointerEvents: 'none' }}>
+      {active.date} · <span style={{ color: MT.green }}>{money(active.cost)}</span> · <span style={{ color: MT.blue }}>{Math.round(active.hours)} h</span>
+    </div>}
+  </div>;
+}
+
+function MetricGauge({ fraction, color, center, caption }) {
+  const f = Math.max(0, Math.min(1, Number.isFinite(fraction) ? fraction : 0));
+  const arc = 'M 14 86 A 66 66 0 0 1 146 86';
+  return <div style={{ textAlign: 'center' }}>
+    <svg viewBox="0 0 160 100" style={{ width: '100%', maxWidth: 130, display: 'block', margin: '0 auto' }} role="img" aria-label={caption}>
+      <path d={arc} fill="none" stroke={MT.track} strokeWidth="13" strokeLinecap="round" pathLength="100" />
+      {f > 0 && <path d={arc} fill="none" stroke={color} strokeWidth="13" strokeLinecap="round" pathLength="100" strokeDasharray={`${f * 100} 100`} />}
+      <text x="80" y="78" textAnchor="middle" fontSize="20" fontWeight="700" fill={MT.text}>{center}</text>
+    </svg>
+    <div style={{ fontSize: 11, color: MT.muted, marginTop: 0 }}>{caption}</div>
+  </div>;
+}
+
+function ResourceMetrics({ region, accountId, regions, onRegionChange }) {
+  const [state, setState] = useState({ data: null, error: '', loading: false });
+  useEffect(() => {
+    if (!region || !accountId) return undefined;
+    let cancelled = false;
+    setState({ data: null, error: '', loading: true });
+    requestJson(`/api/aws/metrics?region=${encodeURIComponent(region)}`)
+      .then((data) => { if (!cancelled) setState({ data, error: '', loading: false }); })
+      .catch((error) => { if (!cancelled) setState({ data: null, error: error.message, loading: false }); });
+    return () => { cancelled = true; };
+  }, [region, accountId]);
+  if (!region || !accountId) return null;
+
+  const { data, error, loading } = state;
+  const days = data?.ec2_daily || [];
+  const hasEc2 = days.some((d) => d.cost > 0 || d.hours > 0);
+  const cost = data?.cost;
+  const projected = cost?.projected ?? null;
+  const gaugeBase = cost?.last_month > 0 ? cost.last_month : null;
+  const costFraction = projected != null && gaugeBase ? projected / gaugeBase : 0;
+  const s3 = data?.s3;
+  const standardShare = s3?.total_bytes > 0 ? s3.standard_bytes / s3.total_bytes : 0;
+  const net = data?.network;
+  const netMax = Math.max(net?.in_bytes || 0, net?.out_bytes || 0, 1);
+  const tile = { background: MT.tile, border: `1px solid ${MT.line}`, borderRadius: 12, padding: '10px 14px' };
+  const title = { margin: 0, fontSize: 13, fontWeight: 600, color: MT.text };
+  const note = { margin: '6px 0 0', fontSize: 11, color: MT.muted };
+
+  return <section className="panel" aria-label="AWS resource metrics" style={{ padding: 14, margin: '18px 0' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+      <div><h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>AWS Resource Metrics</h2>
+        <small style={{ color: MT.muted }}>{region} · last 7 days · Cost Explorer &amp; CloudWatch</small></div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        {regions?.length > 0 && onRegionChange && <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: MT.muted }}>Region
+          <select value={region} onChange={(event) => onRegionChange(event.target.value)} aria-label="AWS region for these metrics" style={{ font: 'inherit', fontSize: 12, padding: '3px 6px', borderRadius: 8, border: `1px solid ${MT.line}`, background: 'transparent', color: 'inherit' }}>
+            {getRegionGroups(regions).map((group) => <optgroup label={group.label} key={group.label}>{group.regions.map((item) => <option key={item.id} value={item.id}>{regionDisplayName(item)}</option>)}</optgroup>)}
+          </select>
+        </label>}
+        <span style={{ fontSize: 11, color: MT.green, border: `1px solid ${MT.line}`, borderRadius: 999, padding: '3px 10px' }}>{loading ? 'LOADING…' : data?.cached ? 'LIVE · CACHED' : 'LIVE'}</span>
+      </div>
+    </div>
+    {error && <p style={{ ...note, color: '#c0392b' }}>{error}</p>}
+    {loading && !data && <p style={note}>Loading metrics from your AWS account…</p>}
+    {data && <>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+        <div style={{ ...tile, flex: '2 1 420px', minWidth: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
+            <h3 style={title}>Daily EC2 usage vs. cost</h3>
+            <span style={{ fontSize: 12, color: MT.muted }}><span style={{ color: MT.green }}>●</span> Cost ({data.currency}) &nbsp; <span style={{ color: MT.blue }}>●</span> Running hours</span>
+          </div>
+          {hasEc2 ? <EcTwoLineChart days={days} currency={data.currency} /> : <p style={{ ...note, padding: '24px 0', textAlign: 'center' }}>No EC2 cost or running hours were recorded in the last 7 days.</p>}
+        </div>
+        <div style={{ flex: '1 1 240px', display: 'grid', gap: 10, alignContent: 'start' }}>
+          <div style={tile}>
+            <h3 style={{ ...title, marginBottom: 4 }}>S3 storage · {region}</h3>
+            {s3 && s3.total_bytes > 0
+              ? <MetricGauge fraction={standardShare} color={MT.green} center={formatBytes(s3.total_bytes)} caption={`${Math.round(standardShare * 100)}% in Standard class · ${s3.bucket_count} bucket${s3.bucket_count === 1 ? '' : 's'}`} />
+              : <p style={note}>No S3 storage metrics in this region yet. CloudWatch reports bucket size once a day, so new buckets can take about a day to appear.</p>}
+          </div>
+          <div style={tile}>
+            <h3 style={{ ...title, marginBottom: 4 }}>Projected monthly cost</h3>
+            {cost && (projected != null || cost.month_to_date != null)
+              ? <MetricGauge fraction={costFraction} color={MT.blue} center={moneyShort(projected ?? cost.month_to_date, data.currency)}
+                caption={projected != null ? (gaugeBase ? `Run-rate estimate · last month ${moneyShort(gaugeBase, data.currency)}` : 'Run-rate estimate · no last-month bill yet') : `Month to date (projection starts on day 3)`} />
+              : <p style={note}>Cost Explorer has not returned billing data for this account yet.</p>}
+          </div>
+        </div>
+      </div>
+      <div style={{ ...tile, marginTop: 10 }}>
+        <h3 style={{ ...title, marginBottom: 6 }}>EC2 network traffic (7 days)</h3>
+        {net && net.instance_count > 0
+          ? [['Ingress', net.in_bytes, MT.green], ['Egress', net.out_bytes, MT.blue]].map(([label, bytes, color]) => <div key={label} style={{ display: 'grid', gridTemplateColumns: '60px 1fr 80px', alignItems: 'center', gap: 10, margin: '6px 0' }}>
+            <span style={{ color: MT.muted, fontSize: 12 }}>{label}</span>
+            <span style={{ height: 6, borderRadius: 999, background: MT.track, overflow: 'hidden' }}><span style={{ display: 'block', height: '100%', width: `${Math.max(2, (bytes / netMax) * 100)}%`, background: color, borderRadius: 999 }} /></span>
+            <strong style={{ fontSize: 12, textAlign: 'right' }}>{formatBytes(bytes)}</strong>
+          </div>)
+          : <p style={note}>No EC2 network metrics in {region} for the last 7 days.</p>}
+        <p style={note}>Instance-level CloudWatch NetworkIn/NetworkOut, summed over {net?.instance_count || 0} instance(s). It includes traffic inside AWS, so it is not the same as your internet data-transfer bill.</p>
+      </div>
+      {data.warnings?.length > 0 && <p style={{ ...note, color: '#a8741a' }}>{data.warnings.join(' · ')}</p>}
+      <p style={note}>Cost Explorer requests cost about $0.01 each on your AWS bill; this panel is cached for 15 minutes.</p>
+    </>}
+  </section>;
+}
+
 function Overview({
   account, accountError, costs, costError, costLoading, latestCost,
-  latestCostLabel, scan, scanError, scanLoading, region,
+  latestCostLabel, scan, scanError, scanLoading, region, regionData, onRegionChange,
   regionError, onScan, onOpenInventory, onRetryAccount, onRetryCosts,
 }) {
   const monthly = costs?.monthly || [];
@@ -888,12 +1125,23 @@ function Overview({
       <MetricCard label="LIVE INVENTORY RESOURCES" value={scan ? String(scan.resource_count) : scanLoading ? 'Loading…' : 'Unavailable'} detail={scan ? `Observed in ${scan.region}` : scanError || 'Run a scan to load inventory'} icon={Server} tone="blue" />
     </section>
 
+    <ResourceMetrics
+      region={region && region !== 'all' ? region : account?.region}
+      accountId={account?.account_id}
+      regions={regionData}
+      onRegionChange={onRegionChange}
+    />
+
     <section className="overview-grid">
       <article className="panel spend-panel">
         <div className="panel-heading"><div><h2>AWS spend by month</h2><p>Cost Explorer · six complete calendar months</p></div><span className="billing-data-tag">UNBLENDED COST</span></div>
         {monthly.length
           ? <><div className="chart-summary"><strong>{formatMoney(latestCost?.amount, latestCost?.currency)}</strong><small>{latestCostLabel}</small></div><Suspense fallback={<div className="chart-loading">Loading chart…</div>}><SpendChart data={monthly.map((item) => ({ month: item.month.slice(0, 7), spend: Number(item.amount) }))} currency={costs.currency} /></Suspense><div className="chart-footnote"><span>Source: AWS Cost Explorer</span><span>Amounts reported by AWS in {costs.currency}</span></div></>
-          : <EmptyPanel loading={costLoading} message={costError || 'Cost Explorer has not returned billing data.'} />}
+          : <>
+            <EmptyPanel loading={costLoading} message={costError || 'Cost Explorer has not returned billing data.'} />
+            {!costLoading && <p className="module-note">Enable Cost Explorer in AWS Billing (it can take up to 24 hours to fill in) and make sure the connected role allows ce:Get* actions.</p>}
+            {resources.length > 0 && <ResourceMixChart resources={resources} region={scan?.region || region} />}
+          </>}
       </article>
       <article className="panel findings-panel">
         <div className="panel-heading"><div><h2>Observed AWS resources</h2><p>Multi-service read-only scan</p></div><button className="text-button" onClick={onOpenInventory}>View inventory <span aria-hidden="true">→</span></button></div>

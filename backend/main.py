@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 import re
 
-import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
@@ -15,9 +14,11 @@ from starlette.requests import Request
 try:
     from backend.scanner import AWSFinOpsScanner
     from backend.governance import router as governance_router
+    from backend.connect import SERVER_ACCOUNT_ENABLED, router as connect_router, get_boto_session, is_connected
 except ModuleNotFoundError:  # pragma: no cover - support direct backend execution in tests/dev
     from scanner import AWSFinOpsScanner
     from governance import router as governance_router
+    from connect import SERVER_ACCOUNT_ENABLED, router as connect_router, get_boto_session, is_connected
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("finops_main")
@@ -25,6 +26,9 @@ logger = logging.getLogger("finops_main")
 REGION_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*-\d+$")
 AWS_REGION = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "ap-south-1"
 scanner = AWSFinOpsScanner(region_name=AWS_REGION)
+# Customers who connect their own AWS account are not tied to the server's region.
+# This is only the region pre-selected for them; they can scan any region or all regions.
+CONNECTED_DEFAULT_REGION = os.getenv("FINOPS_DEFAULT_REGION", "us-east-1")
 
 app = FastAPI(
     title="FinOps-Bharat API",
@@ -32,6 +36,7 @@ app = FastAPI(
     version="2.0.0",
 )
 app.include_router(governance_router)
+app.include_router(connect_router)
 
 APP_ENV = os.getenv("APP_ENV", "development").lower()
 SSO_USER_HEADER = os.getenv("SSO_USER_HEADER", "x-authenticated-user").lower()
@@ -66,6 +71,31 @@ async def require_sso_identity(request: Request, call_next):
     return await call_next(request)
 
 
+# Multi-tenant guard. Unless FINOPS_ALLOW_SERVER_ACCOUNT=true, visitors must connect their own AWS
+# account before any data is returned, so nobody sees the server's own account.
+# Only prefixes listed here are known to use the visitor's own connected session; every other
+# /api/ route (they still use the server's credentials) is blocked until it is made session-aware.
+SESSION_AWARE_PREFIXES = ("/api/aws/", "/api/k8s/", "/api/ecr/", "/api/governance/", "/api/webhooks/")
+ALWAYS_OPEN_PATHS = {"/api/health", "/api/webhooks/aws-sns"}
+
+
+@app.middleware("http")
+async def protect_server_account(request: Request, call_next):
+    path = request.url.path
+    if (
+        SERVER_ACCOUNT_ENABLED
+        or not path.startswith("/api/")
+        or path in ALWAYS_OPEN_PATHS
+        or path.startswith("/api/connect/")
+    ):
+        return await call_next(request)
+    if not is_connected(request):
+        return JSONResponse(status_code=401, content={"detail": "Connect your AWS account to see your data."})
+    if not path.startswith(SESSION_AWARE_PREFIXES):
+        return JSONResponse(status_code=501, content={"detail": "This page is not available for connected accounts yet."})
+    return await call_next(request)
+
+
 def _aws_warning_response(operation: str, exc: Exception, **extra: object) -> dict[str, object]:
     logger.exception("AWS %s failed", operation)
     payload: dict[str, object] = {
@@ -80,16 +110,39 @@ def _aws_warning_response(operation: str, exc: Exception, **extra: object) -> di
     return payload
 
 
+def default_region(request: Request) -> str:
+    """The server's own region for its own account, or a neutral default for a connected customer account."""
+    return CONNECTED_DEFAULT_REGION if is_connected(request) else AWS_REGION
+
+
+def get_scanner(request: Request) -> AWSFinOpsScanner:
+    """Shared scanner for the server's own account; a per-request scanner for a connected account."""
+    if not is_connected(request):
+        if not SERVER_ACCOUNT_ENABLED:
+            raise HTTPException(status_code=401, detail="Connect your AWS account to see your data.")
+        return scanner
+    session = get_boto_session(request)
+    try:
+        return AWSFinOpsScanner(region_name=default_region(request), session=session)
+    except TypeError as exc:
+        raise HTTPException(
+            status_code=501,
+            detail="scanner.py must accept a boto3 session: AWSFinOpsScanner(region_name=..., session=...).",
+        ) from exc
+
+
 @app.get("/api/health")
 def health_check():
     return {"status": "healthy", "service": "FinOps-Bharat API"}
 
 
 @app.get("/api/aws/account")
-def get_aws_account():
-    """Return the identity of the server-side AWS credentials in use."""
+def get_aws_account(request: Request):
+    """Return the identity of the AWS credentials in use (server role, or the connected role)."""
+    session = get_boto_session(request)
+    region = default_region(request)
     try:
-        identity = boto3.client("sts", region_name=AWS_REGION).get_caller_identity()
+        identity = session.client("sts", region_name=region).get_caller_identity()
     except (BotoCoreError, ClientError) as exc:
         return _aws_warning_response(
             "identity check",
@@ -97,33 +150,38 @@ def get_aws_account():
             account_id=None,
             arn=None,
             user_id=None,
-            region=AWS_REGION,
+            region=region,
         )
     return {
         "account_id": identity["Account"],
         "arn": identity["Arn"],
         "user_id": identity["UserId"],
-        "region": AWS_REGION,
+        "region": region,
     }
 
 
 @app.get("/api/aws/regions")
-def get_aws_regions():
+def get_aws_regions(request: Request):
+    active_scanner = get_scanner(request)
+    region = default_region(request)
     try:
-        regions = scanner.list_enabled_regions()
+        regions = active_scanner.list_enabled_regions()
     except (BotoCoreError, ClientError) as exc:
-        return _aws_warning_response("enabled region lookup", exc, regions=[], configured_region=AWS_REGION)
-    return {"regions": regions, "configured_region": AWS_REGION}
+        return _aws_warning_response("enabled region lookup", exc, regions=[], configured_region=region)
+    return {"regions": regions, "configured_region": region}
 
 
 @app.get("/api/aws/scan")
-def scan_cloud_resources(region: str = Query(default=AWS_REGION, min_length=1, max_length=64)):
+def scan_cloud_resources(request: Request, region: str = Query(default=AWS_REGION, min_length=1, max_length=64)):
     normalized_region = region.strip()
     global_scan = normalized_region.lower() == "all"
     if not global_scan and not REGION_PATTERN.fullmatch(normalized_region):
         raise HTTPException(status_code=422, detail="Provide a valid AWS region identifier.")
+    active_scanner = get_scanner(request)
+    session = get_boto_session(request)
+    home_region = default_region(request)
     try:
-        resources = scanner.scan_resources(region_name="all" if global_scan else normalized_region)
+        resources = active_scanner.scan_resources(region_name="all" if global_scan else normalized_region)
     except (BotoCoreError, ClientError) as exc:
         return _aws_warning_response(
             f"inventory scan in {normalized_region}",
@@ -136,15 +194,15 @@ def scan_cloud_resources(region: str = Query(default=AWS_REGION, min_length=1, m
             errors=[{"service": "AWS", "operation": "inventory scan", "region": normalized_region, "message": str(exc)}],
         )
     try:
-        identity = boto3.client("sts", region_name=AWS_REGION).get_caller_identity()
+        identity = session.client("sts", region_name=home_region).get_caller_identity()
         account_id = identity.get("Account")
     except (BotoCoreError, ClientError) as exc:
         logger.warning("AWS caller identity lookup failed during inventory scan: %s", exc)
         account_id = None
-        scanner.last_scan_metadata.setdefault("errors", []).append({
+        active_scanner.last_scan_metadata.setdefault("errors", []).append({
             "service": "STS",
             "operation": "GetCallerIdentity",
-            "region": AWS_REGION,
+            "region": home_region,
             "message": str(exc),
         })
     category_counts: dict[str, int] = {}
@@ -156,14 +214,14 @@ def scan_cloud_resources(region: str = Query(default=AWS_REGION, min_length=1, m
         category_counts[category] = category_counts.get(category, 0) + 1
         service_counts[service] = service_counts.get(service, 0) + 1
         waste_count += int(resource["is_waste_candidate"])
-    errors = scanner.last_scan_metadata.get("errors", [])
+    errors = active_scanner.last_scan_metadata.get("errors", [])
     return {
         "status": "warning" if errors else "ok",
         "is_live": bool(resources) or not errors,
         "message": f"Scan completed with {len(errors)} service warning(s)." if errors else "Live AWS scan complete.",
         "account_id": account_id,
         "region": "all" if global_scan else normalized_region,
-        "regions_scanned": scanner.last_scan_metadata.get("regions_scanned", []),
+        "regions_scanned": active_scanner.last_scan_metadata.get("regions_scanned", []),
         "scanned_at": datetime.now(timezone.utc).isoformat(),
         "resource_count": len(resources),
         "waste_candidate_count": waste_count,
@@ -181,13 +239,14 @@ def _subtract_months(value: date, months: int) -> date:
 
 
 @app.get("/api/aws/costs")
-def get_aws_costs():
+def get_aws_costs(request: Request):
     """Return actual unblended AWS costs for the last six complete calendar months."""
+    session = get_boto_session(request)
     end = date.today().replace(day=1)
     start = _subtract_months(end, 6)
     try:
-        client = boto3.client("ce", region_name="us-east-1")
-        request = {
+        client = session.client("ce", region_name="us-east-1")
+        ce_query = {
             "TimePeriod": {"Start": start.isoformat(), "End": end.isoformat()},
             "Granularity": "MONTHLY",
             "Metrics": ["UnblendedCost"],
@@ -199,8 +258,8 @@ def get_aws_costs():
         next_token = None
         while True:
             if next_token:
-                request["NextPageToken"] = next_token
-            response = scanner.get_cost_and_usage(request, ce_client=client)
+                ce_query["NextPageToken"] = next_token
+            response = scanner.get_cost_and_usage(ce_query, ce_client=client)
             for period in response.get("ResultsByTime", []):
                 total = period["Total"]["UnblendedCost"]
                 period_currency = total["Unit"]
