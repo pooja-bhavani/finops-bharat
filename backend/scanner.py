@@ -1,590 +1,283 @@
-from datetime import datetime, timezone
+"""Read-only AWS inventory scanner for FinOps-Bharat.
+
+The scanner is bound to ONE boto3 session. For a visitor who connected their own account that
+session holds the assumed-role credentials, so every call below runs inside THEIR account.
+Nothing is cached at module level, so one visitor's data can never reach another.
+
+    AWSFinOpsScanner(region_name="us-east-1", session=boto3_session)
+
+Only describe/list/get calls are made. Nothing is created, changed or deleted.
+"""
+from __future__ import annotations
+
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("finops_scanner")
 
-GLOBAL_REGION = "global"
-SCAN_CATEGORIES = ("Compute", "Storage", "Database", "Serverless", "Networking", "Security", "Management")
-WASTE_STATES = {"unattached", "unassociated"}
+MAX_WORKERS = 8
+MAX_S3_BUCKETS = 300
+_BOTO_CONFIG = Config(retries={"max_attempts": 3, "mode": "standard"}, connect_timeout=5, read_timeout=20)
 
 
-def client_list_once(client, operation: str, result_key: str, **kwargs) -> list[dict[str, Any]]:
-    response = getattr(client, operation)(**kwargs)
-    items = list(response.get(result_key, []))
-    token = response.get("NextToken")
-    while token:
-        response = getattr(client, operation)(**kwargs, NextToken=token)
-        items.extend(response.get(result_key, []))
-        token = response.get("NextToken")
-    return items
+def _tag_name(tags: list[dict] | None, fallback: str) -> str:
+    for tag in tags or []:
+        if tag.get("Key") == "Name" and tag.get("Value"):
+            return tag["Value"]
+    return fallback
+
+
+def _resource(
+    *, rid: str, name: str, service: str, category: str, rtype: str, region: str,
+    state: str = "", waste: bool = False, details: str = "", cost: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": rid,
+        "name": name or rid,
+        "service": service,
+        "category": category,
+        "type": rtype,
+        "region": region,
+        "state": state,
+        "is_waste_candidate": bool(waste),
+        "estimated_monthly_cost": cost,
+        "details": details,
+    }
 
 
 class AWSFinOpsScanner:
-    """Read-only, multi-service AWS inventory scanner using the runtime credential chain."""
-
-    def __init__(self, region_name: str = "ap-south-1"):
+    def __init__(self, region_name: str = "us-east-1", session: boto3.Session | None = None):
         self.region_name = region_name
-        self._errors: list[dict[str, str]] = []
+        self.session = session or boto3.Session()
+        self.last_scan_metadata: dict[str, Any] = {"errors": [], "regions_scanned": []}
+        self._client_lock = threading.Lock()
 
-    @staticmethod
-    def get_cost_and_usage(request: dict[str, Any], ce_client=None) -> dict[str, Any]:
-        """Fetch a Cost Explorer page and report AWS errors to the API layer."""
-        try:
-            if ce_client is None:
-                ce_client = boto3.client("ce", region_name="us-east-1")
-            return ce_client.get_cost_and_usage(**request)
-        except (BotoCoreError, ClientError):
-            logger.exception("AWS Cost Explorer GetCostAndUsage request failed")
-            raise
+    # ------------------------------------------------------------------ helpers
+    def _client(self, service: str, region: str):
+        # Creating clients from one Session is not thread-safe, so serialise creation only.
+        with self._client_lock:
+            return self.session.client(service, region_name=region, config=_BOTO_CONFIG)
 
-    @staticmethod
-    def list_enabled_regions(ec2_client=None, *, all_regions: bool = True) -> list[dict[str, str]]:
-        if ec2_client is None:
-            ec2_client = boto3.client("ec2", region_name="us-east-1")
-        try:
-            response = ec2_client.describe_regions(AllRegions=all_regions)
-        except (BotoCoreError, ClientError):
-            logger.exception("AWS EC2 DescribeRegions request failed")
-            raise
-        regions = []
-        for region in response.get("Regions", []):
-            status = region.get("OptInStatus")
-            if status and status not in {"opt-in-not-required", "opted-in"}:
-                continue
-            name = region["RegionName"]
-            regions.append({"id": name, "name": name})
-        return sorted(regions, key=lambda region: region["id"])
+    def list_enabled_regions(self) -> list[dict[str, str]]:
+        """Regions this account can use (opted-in/default regions), as [{"id", "name"}]."""
+        response = self._client("ec2", self.region_name).describe_regions(AllRegions=False)
+        names = sorted(item["RegionName"] for item in response.get("Regions", []))
+        return [{"id": name, "name": name} for name in names]
 
-    @staticmethod
-    def _tags(resource: dict[str, Any]) -> dict[str, str]:
-        tags = resource.get("Tags", [])
-        if isinstance(tags, dict):
-            return {str(key): str(value) for key, value in tags.items()}
-        return {
-            tag["Key"]: tag["Value"]
-            for tag in tags
-            if isinstance(tag, dict) and "Key" in tag and "Value" in tag
-        }
+    def get_cost_and_usage(self, query: dict, ce_client=None) -> dict:
+        client = ce_client or self._client("ce", "us-east-1")  # Cost Explorer only exists in us-east-1
+        return client.get_cost_and_usage(**query)
 
-    @classmethod
-    def _resource(
-        cls,
-        *,
-        identifier: Any,
-        name: Any,
-        service: str,
-        category: str,
-        resource_type: str,
-        region: str,
-        state: Any,
-        details: str,
-        waste_candidate: bool = False,
-        created_at: Any = None,
-    ) -> dict[str, Any]:
-        normalized_state = str(state or "unknown").lower()
-        return {
-            "id": str(identifier or name or "unknown"),
-            "name": str(name or identifier or "Unnamed resource"),
-            "service": service,
-            "category": category,
-            "type": resource_type,
-            "region": region,
-            "state": normalized_state,
-            "is_waste_candidate": waste_candidate or normalized_state in WASTE_STATES,
-            "estimated_monthly_cost": None,
-            "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,
-            "details": details,
-        }
+    # --------------------------------------------------------------------- scan
+    def scan_resources(self, region_name: str | None = None) -> list[dict[str, Any]]:
+        """Inventory one region, or every enabled region when region_name == "all"."""
+        target = (region_name or self.region_name).strip()
+        errors: list[dict[str, str]] = []
+        err_lock = threading.Lock()
 
-    def _run(
-        self,
-        service: str,
-        region: str,
-        operation: str,
-        action: Callable[[], list[dict[str, Any]]],
-    ) -> list[dict[str, Any]]:
-        try:
-            return action()
-        except (BotoCoreError, ClientError) as exc:
-            logger.warning("AWS %s %s failed in %s: %s", service, operation, region, exc)
-            self._errors.append({
-                "service": service,
-                "operation": operation,
-                "region": region,
-                "message": str(exc),
-            })
-            return []
-
-    @staticmethod
-    def _pages(client, operation: str, result_key: str, **kwargs) -> list[dict[str, Any]]:
-        if hasattr(client, "can_paginate") and not client.can_paginate(operation):
-            return client_list_once(client, operation, result_key, **kwargs)
-        paginator = client.get_paginator(operation)
-        return [
-            item
-            for page in paginator.paginate(**kwargs)
-            for item in page.get(result_key, [])
-        ]
-
-    @staticmethod
-    def _chunks(values: list[str], size: int) -> list[list[str]]:
-        return [values[index:index + size] for index in range(0, len(values), size)]
-
-    def _scan_region(self, region: str, ec2_client=None) -> list[dict[str, Any]]:
-        found: list[dict[str, Any]] = []
-
-        def collect(service_name: str, operation: str, action: Callable[[], list[dict[str, Any]]]):
-            found.extend(self._run(service_name, region, operation, action))
-
-        # Compute and containers
-        ec2 = ec2_client
-        if ec2 is None:
-            try:
-                ec2 = boto3.client("ec2", region_name=region)
-            except (BotoCoreError, ClientError) as exc:
-                self._errors.append({"service": "EC2", "operation": "create_client", "region": region, "message": str(exc)})
-                logger.warning("AWS EC2 client creation failed in %s: %s", region, exc)
-
-        if ec2 is not None:
-            def instances():
-                return [
-                    self._resource(
-                        identifier=instance.get("InstanceId"),
-                        name=self._tags(instance).get("Name") or instance.get("InstanceId"),
-                        service="EC2",
-                        category="Compute",
-                        resource_type=instance.get("InstanceType", "EC2 instance"),
-                        region=region,
-                        state=instance.get("State", {}).get("Name"),
-                        details=f'{instance.get("InstanceType", "unknown")} · {instance.get("State", {}).get("Name", "unknown")}',
-                        waste_candidate=instance.get("State", {}).get("Name") == "stopped",
-                    )
-                    for reservation in self._pages(ec2, "describe_instances", "Reservations")
-                    for instance in reservation.get("Instances", [])
-                ]
-
-            collect("EC2", "DescribeInstances", instances)
-
-            def volumes():
-                return [
-                    self._resource(
-                        identifier=volume.get("VolumeId"),
-                        name=self._tags(volume).get("Name") or volume.get("VolumeId"),
-                        service="EBS",
-                        category="Storage",
-                        resource_type=volume.get("VolumeType", "EBS volume"),
-                        region=region,
-                        state="unattached" if volume.get("State") == "available" else volume.get("State"),
-                        details=f'{volume.get("Size", 0)} GiB · {volume.get("VolumeType", "unknown")} · {len(volume.get("Attachments", []))} attachment(s)',
-                        created_at=volume.get("CreateTime"),
-                    )
-                    for volume in self._pages(ec2, "describe_volumes", "Volumes")
-                ]
-
-            collect("EBS", "DescribeVolumes", volumes)
-
-            def addresses():
-                return [
-                    self._resource(
-                        identifier=address.get("AllocationId") or address.get("PublicIp"),
-                        name=self._tags(address).get("Name") or address.get("PublicIp"),
-                        service="EC2",
-                        category="Networking",
-                        resource_type="Elastic IP",
-                        region=region,
-                        state="associated" if address.get("AssociationId") else "unassociated",
-                        details=f'{address.get("PublicIp", "Public IP not returned")} · {address.get("NetworkInterfaceId", "not attached to network interface")}',
-                    )
-                    for address in self._pages(ec2, "describe_addresses", "Addresses")
-                ]
-
-            collect("EC2", "DescribeAddresses", addresses)
-
-            def vpcs():
-                return [
-                    self._resource(
-                        identifier=vpc.get("VpcId"),
-                        name=self._tags(vpc).get("Name") or vpc.get("VpcId"),
-                        service="VPC",
-                        category="Networking",
-                        resource_type="VPC",
-                        region=region,
-                        state=vpc.get("State"),
-                        details=f'{vpc.get("CidrBlock", "CIDR unavailable")} · default={vpc.get("IsDefault", False)}',
-                    )
-                    for vpc in self._pages(ec2, "describe_vpcs", "Vpcs")
-                ]
-
-            collect("VPC", "DescribeVpcs", vpcs)
-
-            def nat_gateways():
-                return [
-                    self._resource(
-                        identifier=nat.get("NatGatewayId"),
-                        name=nat.get("NatGatewayId"),
-                        service="VPC",
-                        category="Networking",
-                        resource_type="NAT Gateway",
-                        region=region,
-                        state=nat.get("State"),
-                        details=f'{nat.get("ConnectivityType", "public")} · {nat.get("SubnetId", "subnet unavailable")}',
-                        waste_candidate=nat.get("State") in {"deleted", "failed"},
-                    )
-                    for nat in self._pages(ec2, "describe_nat_gateways", "NatGateways")
-                ]
-
-            collect("VPC", "DescribeNatGateways", nat_gateways)
-
-        def ecs_services():
-            ecs = boto3.client("ecs", region_name=region)
-            resources = []
-            clusters = self._pages(ecs, "list_clusters", "clusterArns")
-            for cluster_arn in clusters:
-                cluster_name = cluster_arn.rsplit("/", 1)[-1]
-                resources.append(self._resource(
-                    identifier=cluster_arn,
-                    name=cluster_name,
-                    service="ECS",
-                    category="Compute",
-                    resource_type="ECS cluster",
-                    region=region,
-                    state="active",
-                    details=cluster_arn,
-                ))
-                service_arns = self._pages(ecs, "list_services", "serviceArns", cluster=cluster_arn)
-                for service_arns_chunk in self._chunks(service_arns, 10):
-                    descriptions = ecs.describe_services(cluster=cluster_arn, services=service_arns_chunk)
-                    for item in descriptions.get("services", []):
-                        resources.append(self._resource(
-                            identifier=item.get("serviceArn"),
-                            name=item.get("serviceName"),
-                            service="ECS",
-                            category="Compute",
-                            resource_type="ECS service",
-                            region=region,
-                            state=item.get("status"),
-                            details=f'{item.get("runningCount", 0)} running / {item.get("desiredCount", 0)} desired tasks',
-                        ))
-            return resources
-
-        collect("ECS", "ListClusters/DescribeServices", ecs_services)
-
-        def eks_clusters():
-            client = boto3.client("eks", region_name=region)
-            names = self._pages(client, "list_clusters", "clusters")
-            return [
-                self._resource(
-                    identifier=name, name=name, service="EKS", category="Compute",
-                    resource_type="EKS cluster", region=region, state="unknown",
-                    details="Cluster listed by EKS; describe permission not requested.",
-                )
-                for name in names
-            ]
-
-        collect("EKS", "ListClusters", eks_clusters)
-
-        def apprunner_services():
-            client = boto3.client("apprunner", region_name=region)
-            if not client.can_paginate("list_services"):
-                services = []
-                token = None
-                while True:
-                    response = client.list_services(**({"NextToken": token} if token else {}))
-                    services.extend(response.get("ServiceSummaryList", []))
-                    token = response.get("NextToken")
-                    if not token:
-                        break
-                listed = services
+        def record(service: str, operation: str, region: str, exc: Exception) -> None:
+            if isinstance(exc, ClientError):
+                message = exc.response.get("Error", {}).get("Message") or exc.response.get("Error", {}).get("Code", str(exc))
             else:
-                listed = self._pages(client, "list_services", "ServiceSummaryList")
-            return [
-                self._resource(
-                    identifier=item.get("ServiceArn"), name=item.get("ServiceName"), service="App Runner",
-                    category="Compute", resource_type="App Runner service", region=region,
-                    state=item.get("Status"), details=item.get("ServiceUrl", "Service URL unavailable"),
-                )
-                for item in listed
-            ]
+                message = str(exc)
+            logger.warning("%s %s failed in %s: %s", service, operation, region, message)
+            with err_lock:
+                errors.append({"service": service, "operation": operation, "region": region, "message": message})
 
-        collect("App Runner", "ListServices", apprunner_services)
+        if target.lower() == "all":
+            regions = [item["id"] for item in self.list_enabled_regions()]
+        else:
+            regions = [target]
 
-        # Regional storage
-        def efs():
-            client = boto3.client("efs", region_name=region)
-            return [
-                self._resource(
-                    identifier=item.get("FileSystemId"), name=item.get("Name") or item.get("FileSystemId"),
-                    service="EFS", category="Storage", resource_type="EFS file system", region=region,
-                    state=item.get("LifeCycleState"),
-                    details=f'{item.get("SizeInBytes", {}).get("Value", 0)} bytes · {item.get("ThroughputMode", "unknown")} throughput',
-                )
-                for item in self._pages(client, "describe_file_systems", "FileSystems")
-            ]
-
-        collect("EFS", "DescribeFileSystems", efs)
-
-        # Databases and caches
-        def rds():
-            client = boto3.client("rds", region_name=region)
-            return [
-                self._resource(
-                    identifier=item.get("DBInstanceArn") or item.get("DBInstanceIdentifier"),
-                    name=item.get("DBInstanceIdentifier"), service="RDS", category="Database",
-                    resource_type=item.get("DBInstanceClass", "RDS instance"), region=region,
-                    state=item.get("DBInstanceStatus"),
-                    details=f'{item.get("Engine", "unknown")} {item.get("EngineVersion", "")} · {item.get("AllocatedStorage", 0)} GiB',
-                )
-                for item in self._pages(client, "describe_db_instances", "DBInstances")
-            ]
-
-        collect("RDS", "DescribeDBInstances", rds)
-
-        def dynamodb():
-            client = boto3.client("dynamodb", region_name=region)
-            resources = []
-            for table_name in self._pages(client, "list_tables", "TableNames"):
-                table = client.describe_table(TableName=table_name).get("Table", {})
-                capacity = table.get("ProvisionedThroughput", {})
-                resources.append(self._resource(
-                    identifier=table.get("TableArn") or table_name, name=table_name,
-                    service="DynamoDB", category="Database", resource_type="DynamoDB table",
-                    region=region, state=table.get("TableStatus"),
-                    details=f'{table.get("BillingModeSummary", {}).get("BillingMode", "PROVISIONED")} · {capacity.get("ReadCapacityUnits", 0)} RCU / {capacity.get("WriteCapacityUnits", 0)} WCU',
-                ))
-            return resources
-
-        collect("DynamoDB", "ListTables/DescribeTable", dynamodb)
-
-        def elasticache():
-            client = boto3.client("elasticache", region_name=region)
-            return [
-                self._resource(
-                    identifier=item.get("ARN") or item.get("CacheClusterId"), name=item.get("CacheClusterId"),
-                    service="ElastiCache", category="Database", resource_type=item.get("Engine", "cache cluster"),
-                    region=region, state=item.get("CacheClusterStatus"),
-                    details=f'{item.get("CacheNodeType", "unknown")} · {item.get("NumCacheNodes", 0)} node(s)',
-                )
-                for item in self._pages(client, "describe_cache_clusters", "CacheClusters", ShowCacheNodeInfo=False)
-            ]
-
-        collect("ElastiCache", "DescribeCacheClusters", elasticache)
-
-        def redshift():
-            client = boto3.client("redshift", region_name=region)
-            return [
-                self._resource(
-                    identifier=item.get("ClusterNamespaceArn") or item.get("ClusterIdentifier"),
-                    name=item.get("ClusterIdentifier"), service="Redshift", category="Database",
-                    resource_type="Redshift cluster", region=region, state=item.get("ClusterStatus"),
-                    details=f'{item.get("NodeType", "unknown")} · {item.get("NumberOfNodes", 0)} node(s)',
-                )
-                for item in self._pages(client, "describe_clusters", "Clusters")
-            ]
-
-        collect("Redshift", "DescribeClusters", redshift)
-
-        # Serverless and integration
-        def lambdas():
-            client = boto3.client("lambda", region_name=region)
-            return [
-                self._resource(
-                    identifier=item.get("FunctionArn") or item.get("FunctionName"), name=item.get("FunctionName"),
-                    service="Lambda", category="Serverless", resource_type="Lambda function",
-                    region=region, state=item.get("State", "active"),
-                    details=f'{item.get("Runtime", "custom runtime")} · {item.get("MemorySize", 0)} MiB',
-                )
-                for item in self._pages(client, "list_functions", "Functions")
-            ]
-
-        collect("Lambda", "ListFunctions", lambdas)
-
-        def api_gateway():
-            client = boto3.client("apigateway", region_name=region)
-            return [
-                self._resource(
-                    identifier=item.get("id"), name=item.get("name"), service="API Gateway",
-                    category="Serverless", resource_type="REST API", region=region,
-                    state="available", details=f'{item.get("endpointConfiguration", {}).get("types", ["unknown"])[0]} endpoint',
-                )
-                for item in self._pages(client, "get_rest_apis", "items")
-            ]
-
-        collect("API Gateway", "GetRestApis", api_gateway)
-
-        def api_gateway_v2():
-            client = boto3.client("apigatewayv2", region_name=region)
-            return [
-                self._resource(
-                    identifier=item.get("ApiId"), name=item.get("Name"), service="API Gateway",
-                    category="Serverless", resource_type=f'{item.get("ProtocolType", "HTTP")} API',
-                    region=region, state="available", details=item.get("ApiEndpoint", "Endpoint unavailable"),
-                )
-                for item in self._pages(client, "get_apis", "Items")
-            ]
-
-        collect("API Gateway", "GetApis", api_gateway_v2)
-
-        def sqs():
-            client = boto3.client("sqs", region_name=region)
-            queues = self._pages(client, "list_queues", "QueueUrls")
-            return [
-                self._resource(
-                    identifier=url, name=url.rsplit("/", 1)[-1], service="SQS",
-                    category="Serverless", resource_type="SQS queue", region=region,
-                    state="available", details=url,
-                )
-                for url in queues
-            ]
-
-        collect("SQS", "ListQueues", sqs)
-
-        def sns():
-            client = boto3.client("sns", region_name=region)
-            return [
-                self._resource(
-                    identifier=item.get("TopicArn"), name=(item.get("TopicArn") or "").rsplit(":", 1)[-1],
-                    service="SNS", category="Serverless", resource_type="SNS topic",
-                    region=region, state="available", details=item.get("TopicArn", ""),
-                )
-                for item in self._pages(client, "list_topics", "Topics")
-            ]
-
-        collect("SNS", "ListTopics", sns)
-
-        # Networking and delivery
-        def load_balancers():
-            client = boto3.client("elbv2", region_name=region)
-            return [
-                self._resource(
-                    identifier=item.get("LoadBalancerArn"), name=item.get("LoadBalancerName"),
-                    service="Elastic Load Balancing", category="Networking",
-                    resource_type=f'{item.get("Type", "load balancer").upper()} load balancer',
-                    region=region, state=item.get("State", {}).get("Code"),
-                    details=f'{item.get("Scheme", "unknown")} · {item.get("DNSName", "DNS unavailable")}',
-                )
-                for item in self._pages(client, "describe_load_balancers", "LoadBalancers")
-            ]
-
-        collect("ELB", "DescribeLoadBalancers", load_balancers)
-
-        # Management and security
-        def kms_keys():
-            client = boto3.client("kms", region_name=region)
-            return [
-                self._resource(
-                    identifier=item.get("KeyArn") or item.get("KeyId"), name=item.get("KeyId"),
-                    service="KMS", category="Security", resource_type="KMS key",
-                    region=region, state="available", details=item.get("KeyArn", "Key ARN unavailable"),
-                )
-                for item in self._pages(client, "list_keys", "Keys")
-            ]
-
-        collect("KMS", "ListKeys", kms_keys)
-
-        def secrets():
-            client = boto3.client("secretsmanager", region_name=region)
-            return [
-                self._resource(
-                    identifier=item.get("ARN") or item.get("Name"), name=item.get("Name"),
-                    service="Secrets Manager", category="Security", resource_type="secret",
-                    region=region, state="active" if not item.get("DeletedDate") else "scheduled for deletion",
-                    details=f'Last changed {item.get("LastChangedDate", "date unavailable")}',
-                )
-                for item in self._pages(client, "list_secrets", "SecretList")
-            ]
-
-        collect("Secrets Manager", "ListSecrets", secrets)
-
-        def alarms():
-            client = boto3.client("cloudwatch", region_name=region)
-            return [
-                self._resource(
-                    identifier=item.get("AlarmArn") or item.get("AlarmName"), name=item.get("AlarmName"),
-                    service="CloudWatch", category="Management", resource_type="alarm",
-                    region=region, state=item.get("StateValue"),
-                    details=item.get("MetricName") or item.get("AlarmDescription") or "CloudWatch alarm",
-                )
-                for item in self._pages(client, "describe_alarms", "MetricAlarms")
-            ]
-
-        collect("CloudWatch", "DescribeAlarms", alarms)
-
-        return found
-
-    def _scan_global_services(self, region: str) -> list[dict[str, Any]]:
         resources: list[dict[str, Any]] = []
+        res_lock = threading.Lock()
 
-        def run(service: str, operation: str, action: Callable[[], list[dict[str, Any]]]):
+        def run(region: str, service: str, operation: str, func: Callable[[str], list[dict]]) -> None:
             try:
-                resources.extend(action())
+                found = func(region)
             except (BotoCoreError, ClientError) as exc:
-                logger.warning("AWS %s %s failed: %s", service, operation, exc)
-                self._errors.append({"service": service, "operation": operation, "region": GLOBAL_REGION, "message": str(exc)})
+                record(service, operation, region, exc)
+                return
+            with res_lock:
+                resources.extend(found)
 
-        def buckets():
-            client = boto3.client("s3", region_name=region)
-            result = []
-            for bucket in client.list_buckets().get("Buckets", []):
-                public_status = "unknown"
-                try:
-                    public_status = client.get_public_access_block(Bucket=bucket["Name"]).get(
-                        "PublicAccessBlockConfiguration", {}
-                    )
-                    public_status = "blocked" if all(public_status.values()) else "not fully blocked"
-                except (BotoCoreError, ClientError) as exc:
-                    logger.info("S3 public access status unavailable for %s: %s", bucket["Name"], exc)
-                    self._errors.append({
-                        "service": "S3",
-                        "operation": "GetPublicAccessBlock",
-                        "region": GLOBAL_REGION,
-                        "message": f'{bucket["Name"]}: {exc}',
-                    })
-                result.append(self._resource(
-                    identifier=bucket.get("Name"), name=bucket.get("Name"), service="S3",
-                    category="Storage", resource_type="S3 bucket", region=GLOBAL_REGION,
-                    state="available",
-                    details=f'Created {bucket.get("CreationDate", "date unavailable")} · public access {public_status}',
-                ))
-            return result
+        regional_jobs: list[tuple[str, str, str, Callable[[str], list[dict]]]] = []
+        for region in regions:
+            regional_jobs += [
+                (region, "EC2", "DescribeInstances", self._ec2_instances),
+                (region, "EBS", "DescribeVolumes", self._ebs_volumes),
+                (region, "EC2", "DescribeAddresses", self._elastic_ips),
+                (region, "VPC", "DescribeNatGateways", self._nat_gateways),
+                (region, "ELB", "DescribeLoadBalancers", self._load_balancers),
+                (region, "RDS", "DescribeDBInstances", self._rds_instances),
+                (region, "Lambda", "ListFunctions", self._lambda_functions),
+                (region, "DynamoDB", "ListTables", self._dynamodb_tables),
+                (region, "EKS", "ListClusters", self._eks_clusters),
+            ]
 
-        run("S3", "ListBuckets/GetPublicAccessBlock", buckets)
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            futures = [pool.submit(run, *job) for job in regional_jobs]
+            futures.append(pool.submit(self._run_s3, regions, target.lower() == "all", resources, res_lock, record))
+            for future in futures:
+                future.result()
 
-        def cloudfront():
-            client = boto3.client("cloudfront", region_name="us-east-1")
-            paginator = client.get_paginator("list_distributions")
-            result = []
-            for page in paginator.paginate():
-                listing = page.get("DistributionList", {})
-                for item in listing.get("Items", []):
-                    result.append(self._resource(
-                        identifier=item.get("ARN") or item.get("Id"),
-                        name=item.get("DomainName") or item.get("Id"),
-                        service="CloudFront", category="Networking", resource_type="distribution",
-                        region=GLOBAL_REGION, state="deployed" if item.get("Status") == "Deployed" else item.get("Status"),
-                        details=f'{item.get("Enabled", False) and "enabled" or "disabled"} · {item.get("DomainName", "")}',
+        resources.sort(key=lambda r: (r["region"], r["service"], r["type"], r["name"]))
+        errors.sort(key=lambda e: (e["region"], e["service"]))
+        self.last_scan_metadata = {"errors": errors, "regions_scanned": regions}
+        return resources
+
+    # ----------------------------------------------------------- per-service scans
+    def _ec2_instances(self, region: str) -> list[dict]:
+        out = []
+        for page in self._client("ec2", region).get_paginator("describe_instances").paginate():
+            for reservation in page.get("Reservations", []):
+                for inst in reservation.get("Instances", []):
+                    state = inst.get("State", {}).get("Name", "")
+                    if state == "terminated":
+                        continue
+                    out.append(_resource(
+                        rid=inst["InstanceId"], name=_tag_name(inst.get("Tags"), inst["InstanceId"]),
+                        service="EC2", category="Compute", rtype=inst.get("InstanceType", "Instance"),
+                        region=region, state=state, waste=(state == "stopped"),
+                        details="Stopped instance: its EBS volumes still cost money." if state == "stopped" else "",
                     ))
-            return result
+        return out
 
-        run("CloudFront", "ListDistributions", cloudfront)
-        return resources
+    def _ebs_volumes(self, region: str) -> list[dict]:
+        out = []
+        for page in self._client("ec2", region).get_paginator("describe_volumes").paginate():
+            for vol in page.get("Volumes", []):
+                state = vol.get("State", "")
+                unattached = state == "available"
+                out.append(_resource(
+                    rid=vol["VolumeId"], name=_tag_name(vol.get("Tags"), vol["VolumeId"]),
+                    service="EBS", category="Storage", rtype=f"{vol.get('VolumeType', 'volume')} volume",
+                    region=region, state=state, waste=unattached,
+                    details=f"{vol.get('Size', '?')} GiB" + (" · not attached to any instance" if unattached else ""),
+                ))
+        return out
 
-    def scan_resources(self, region_name: str | None = None, ec2_client=None) -> list[dict[str, Any]]:
-        selected_region = (region_name or self.region_name).strip()
-        self._errors = []
-        if selected_region.lower() == "all":
-            regions = self.list_enabled_regions()
-            resources = []
-            for region in regions:
-                resources.extend(self._scan_region(region["id"]))
-            resources.extend(self._scan_global_services(self.region_name))
-            self.last_scan_metadata = {"regions_scanned": [region["id"] for region in regions], "errors": self._errors[:]}
-            return resources
+    def _elastic_ips(self, region: str) -> list[dict]:
+        out = []
+        for addr in self._client("ec2", region).describe_addresses().get("Addresses", []):
+            associated = bool(addr.get("AssociationId") or addr.get("InstanceId") or addr.get("NetworkInterfaceId"))
+            ip = addr.get("PublicIp", "")
+            out.append(_resource(
+                rid=addr.get("AllocationId") or ip, name=_tag_name(addr.get("Tags"), ip),
+                service="EC2", category="Networking", rtype="Elastic IP", region=region,
+                state="associated" if associated else "unassociated", waste=not associated,
+                details=ip + ("" if associated else " · not associated; idle Elastic IPs are billed"),
+            ))
+        return out
 
-        resources = self._scan_region(selected_region, ec2_client=ec2_client)
-        resources.extend(self._scan_global_services(selected_region))
-        self.last_scan_metadata = {"regions_scanned": [selected_region], "errors": self._errors[:]}
-        return resources
+    def _nat_gateways(self, region: str) -> list[dict]:
+        out = []
+        for page in self._client("ec2", region).get_paginator("describe_nat_gateways").paginate():
+            for nat in page.get("NatGateways", []):
+                state = nat.get("State", "")
+                if state in ("deleted", "deleting"):
+                    continue
+                out.append(_resource(
+                    rid=nat["NatGatewayId"], name=_tag_name(nat.get("Tags"), nat["NatGatewayId"]),
+                    service="VPC", category="Networking", rtype="NAT gateway", region=region, state=state,
+                    details=f"VPC {nat.get('VpcId', '')} · billed hourly plus data processed",
+                ))
+        return out
+
+    def _load_balancers(self, region: str) -> list[dict]:
+        out = []
+        for page in self._client("elbv2", region).get_paginator("describe_load_balancers").paginate():
+            for lb in page.get("LoadBalancers", []):
+                out.append(_resource(
+                    rid=lb["LoadBalancerArn"], name=lb.get("LoadBalancerName", ""), service="ELB",
+                    category="Networking", rtype=f"{lb.get('Type', 'load balancer')} load balancer",
+                    region=region, state=lb.get("State", {}).get("Code", ""), details=lb.get("DNSName", ""),
+                ))
+        return out
+
+    def _rds_instances(self, region: str) -> list[dict]:
+        out = []
+        for page in self._client("rds", region).get_paginator("describe_db_instances").paginate():
+            for db in page.get("DBInstances", []):
+                state = db.get("DBInstanceStatus", "")
+                out.append(_resource(
+                    rid=db["DBInstanceIdentifier"], name=db["DBInstanceIdentifier"], service="RDS",
+                    category="Database", rtype=db.get("DBInstanceClass", "DB instance"), region=region,
+                    state=state, waste=(state == "stopped"),
+                    details=f"{db.get('Engine', '')} · {db.get('AllocatedStorage', '?')} GiB storage",
+                ))
+        return out
+
+    def _lambda_functions(self, region: str) -> list[dict]:
+        out = []
+        for page in self._client("lambda", region).get_paginator("list_functions").paginate():
+            for fn in page.get("Functions", []):
+                out.append(_resource(
+                    rid=fn["FunctionName"], name=fn["FunctionName"], service="Lambda", category="Serverless",
+                    rtype="Function", region=region, state=fn.get("State", "Active"),
+                    details=f"{fn.get('Runtime', 'container image')} · {fn.get('MemorySize', '?')} MB",
+                ))
+        return out
+
+    def _dynamodb_tables(self, region: str) -> list[dict]:
+        out = []
+        for page in self._client("dynamodb", region).get_paginator("list_tables").paginate():
+            for table in page.get("TableNames", []):
+                out.append(_resource(
+                    rid=table, name=table, service="DynamoDB", category="Database", rtype="Table",
+                    region=region, state="active",
+                ))
+        return out
+
+    def _eks_clusters(self, region: str) -> list[dict]:
+        client = self._client("eks", region)
+        out = []
+        for page in client.get_paginator("list_clusters").paginate():
+            for name in page.get("clusters", []):
+                try:
+                    cluster = client.describe_cluster(name=name)["cluster"]
+                    state, version = cluster.get("status", ""), cluster.get("version", "")
+                except (BotoCoreError, ClientError):
+                    state, version = "", ""
+                out.append(_resource(
+                    rid=name, name=name, service="EKS", category="Containers", rtype="Kubernetes cluster",
+                    region=region, state=state, details=f"Kubernetes {version}".strip(),
+                ))
+        return out
+
+    def _run_s3(self, regions: list[str], is_all: bool, resources: list, res_lock, record) -> None:
+        """S3 buckets are global: list once, then keep the buckets that live in the scanned region(s)."""
+        home = regions[0] if regions else self.region_name
+        try:
+            client = self._client("s3", home)
+            buckets = client.list_buckets().get("Buckets", [])
+        except (BotoCoreError, ClientError) as exc:
+            record("S3", "ListBuckets", home, exc)
+            return
+        wanted = set(regions)
+        if len(buckets) > MAX_S3_BUCKETS:
+            record("S3", "ListBuckets", home, RuntimeError(f"Account has {len(buckets)} buckets; only the first {MAX_S3_BUCKETS} were checked."))
+            buckets = buckets[:MAX_S3_BUCKETS]
+        found = []
+        for bucket in buckets:
+            name = bucket["Name"]
+            try:
+                location = client.get_bucket_location(Bucket=name).get("LocationConstraint") or "us-east-1"
+                if location == "EU":
+                    location = "eu-west-1"
+            except (BotoCoreError, ClientError) as exc:
+                record("S3", "GetBucketLocation", home, exc)
+                continue
+            if location in wanted:
+                found.append(_resource(
+                    rid=name, name=name, service="S3", category="Storage", rtype="Bucket",
+                    region=location, state="active",
+                ))
+        with res_lock:
+            resources.extend(found)
