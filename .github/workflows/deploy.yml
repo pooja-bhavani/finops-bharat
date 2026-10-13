@@ -26,7 +26,7 @@ jobs:
 
       - name: Package Deployment Archive
         run: |
-          zip -r deploy.zip Dockerfile backend/ dist/ .ebextensions/
+          zip -r deploy.zip Dockerfile package.json package-lock.json index.html vite.config.js src backend .ebextensions
 
       - name: Deploy to Elastic Beanstalk
         uses: einaregilsson/beanstalk-deploy@v22
