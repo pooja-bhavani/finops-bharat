@@ -52,7 +52,7 @@ PUBLIC_DEMO_GET_PATHS = {
 
 @app.middleware("http")
 async def require_sso_identity(request: Request, call_next):
-    if APP_ENV == "production" and request.url.path not in {"/api/health", "/api/webhooks/aws-sns"}:
+    if SERVER_ACCOUNT_ENABLED and APP_ENV == "production" and request.url.path not in {"/api/health", "/api/webhooks/aws-sns"}:
         if not request.headers.get(SSO_USER_HEADER):
             is_public_demo_read = (
                 PUBLIC_READ_ONLY_DEMO
