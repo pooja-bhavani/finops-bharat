@@ -10,14 +10,18 @@ FINOPS_TEMPLATE_URL     Public S3 URL of the CloudFormation role template. Optio
                         DEFAULT_TEMPLATE_URL below, so a restart never loses it.
 APP_AWS_ACCOUNT_ID      Account customers should trust. Defaults to the server's own account.
 FINOPS_ROLE_NAME        Role name customers create. Default: FinOpsBharatReadOnly.
-FINOPS_CONNECT_STORE    JSON file that keeps ExternalIds/role ARNs across restarts.
+FINOPS_SECRET           REQUIRED in production. Long random string. Sessions are stateless: each visitor's
+                        ExternalId is derived from it and their connected role lives in a signed cookie,
+                        so deploys, rebuilds and extra instances never disconnect anyone. Keep it private
+                        and never change it (changing it disconnects everyone and invalidates their ExternalIds).
 FINOPS_SESSION_DAYS     How long a browser keeps its connection / ExternalId. Default: 30.
 COOKIE_SECURE           "true"/"false". Defaults to true only when APP_ENV=production.
 FINOPS_ALLOW_SERVER_ACCOUNT  "true" shows the server's OWN AWS account to visitors who have not
                         connected (private/single-tenant use). Default "false": visitors see
                         nothing until they connect their own account.
 """
-import json
+import hashlib
+import hmac
 import logging
 import os
 import re
@@ -25,7 +29,6 @@ import secrets
 import threading
 import time
 from functools import lru_cache
-from pathlib import Path
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -39,45 +42,57 @@ ROLE_NAME = os.getenv("FINOPS_ROLE_NAME", "FinOpsBharatReadOnly")
 # Not a secret: it is a public file that every visitor's AWS console must be able to read.
 DEFAULT_TEMPLATE_URL = "https://finops-bharat-templates-pooja.s3.ap-south-1.amazonaws.com/finops-bharat.yml"
 ROLE_ARN_RE = re.compile(r"^arn:aws:iam::\d{12}:role/" + re.escape(ROLE_NAME) + r"$")
-COOKIE_NAME = "fb_sid"
+COOKIE_NAME = "fb_sid"        # random session id (identifies the browser; ExternalId is derived from it)
+ROLE_COOKIE = "fb_role"       # signed "<role arn>.<signature>": which role this browser connected
+SID_RE = re.compile(r"^[A-Za-z0-9_-]{20,64}$")
 # A visitor keeps the same ExternalId (and connection) in the same browser for this long.
 COOKIE_MAX_AGE = int(os.getenv("FINOPS_SESSION_DAYS", "30")) * 24 * 3600
-STORE_PATH = Path(os.getenv("FINOPS_CONNECT_STORE", ".finops_connections.json"))
 REFRESH_MARGIN_SECONDS = 300
 SERVER_ACCOUNT_ENABLED = os.getenv("FINOPS_ALLOW_SERVER_ACCOUNT", "false").lower() == "true"
 
+_SECRET = os.getenv("FINOPS_SECRET", "").strip()
+if not _SECRET:
+    _SECRET = secrets.token_hex(32)
+    logger.warning(
+        "FINOPS_SECRET is not set: using a random secret that changes on every restart, so visitors "
+        "will be disconnected and their ExternalIds will change after each deploy. Set FINOPS_SECRET."
+    )
+
 _lock = threading.RLock()
-_sessions: dict[str, dict] = {}  # sid -> {"external_id", "role_arn", "created"}  (persisted)
-_creds: dict[str, dict] = {}     # sid -> {"session", "expires"}                  (memory only)
+_creds: dict[str, dict] = {}  # sid -> {"session", "expires"}  (memory only; re-assumed after a restart)
 
 
-def _load_store() -> None:
-    try:
-        data = json.loads(STORE_PATH.read_text())
-    except FileNotFoundError:
-        return
-    except (OSError, ValueError):
-        logger.warning("Could not read connection store %s", STORE_PATH)
-        return
-    if isinstance(data, dict):
-        _sessions.update({k: v for k, v in data.items() if isinstance(v, dict)})
+def _sign(message: str) -> str:
+    return hmac.new(_SECRET.encode(), message.encode(), hashlib.sha256).hexdigest()
 
 
-def _save_store() -> None:
-    try:
-        tmp = STORE_PATH.with_suffix(".tmp")
-        tmp.write_text(json.dumps(_sessions))
-        os.chmod(tmp, 0o600)
-        tmp.replace(STORE_PATH)
-    except OSError:
-        logger.warning("Could not write connection store %s", STORE_PATH)
+def _external_id(sid: str) -> str:
+    """Stable per-browser ExternalId, recomputed on demand: nothing is stored on the server."""
+    return _sign("external-id:" + sid)[:32]
 
 
-def _prune() -> None:
-    cutoff = time.time() - COOKIE_MAX_AGE
-    for sid in [s for s, e in _sessions.items() if e.get("created", 0) < cutoff]:
-        _sessions.pop(sid, None)
-        _creds.pop(sid, None)
+def _valid_sid(sid: str | None) -> bool:
+    return bool(sid) and bool(SID_RE.fullmatch(sid))
+
+
+def _pack_role(sid: str, role_arn: str) -> str:
+    return f"{role_arn}.{_sign('role:' + sid + ':' + role_arn)}"
+
+
+def _unpack_role(sid: str, value: str | None) -> str | None:
+    if not value or "." not in value:
+        return None
+    role_arn, signature = value.rsplit(".", 1)
+    if not hmac.compare_digest(signature, _sign("role:" + sid + ":" + role_arn)):
+        return None
+    return role_arn if ROLE_ARN_RE.fullmatch(role_arn) else None
+
+
+def _set_cookie(response: Response, name: str, value: str) -> None:
+    response.set_cookie(
+        name, value, httponly=True, secure=_cookie_secure(),
+        samesite="lax", max_age=COOKIE_MAX_AGE, path="/",
+    )
 
 
 def _cookie_secure() -> bool:
@@ -108,8 +123,6 @@ def _assume(entry: dict) -> tuple[boto3.Session, float]:
     return session, creds["Expiration"].timestamp()
 
 
-_load_store()
-
 
 class VerifyBody(BaseModel):
     role_arn: str
@@ -125,20 +138,12 @@ def start(request: Request, response: Response):
     except (BotoCoreError, ClientError) as exc:
         logger.warning("Could not determine app account id: %s", exc)
         raise HTTPException(status_code=503, detail="Server could not determine its AWS account id. Set APP_AWS_ACCOUNT_ID.") from exc
-    with _lock:
-        _prune()
-        sid = request.cookies.get(COOKIE_NAME)
-        if sid not in _sessions:
-            sid = secrets.token_urlsafe(32)
-            _sessions[sid] = {"external_id": secrets.token_hex(16), "role_arn": None, "created": time.time()}
-            _save_store()
-        external_id = _sessions[sid]["external_id"]
-    response.set_cookie(
-        COOKIE_NAME, sid, httponly=True, secure=_cookie_secure(),
-        samesite="lax", max_age=COOKIE_MAX_AGE, path="/",
-    )
+    sid = request.cookies.get(COOKIE_NAME)
+    if not _valid_sid(sid):
+        sid = secrets.token_urlsafe(32)
+    _set_cookie(response, COOKIE_NAME, sid)
     return {
-        "external_id": external_id,
+        "external_id": _external_id(sid),
         "trusted_account_id": trusted_account_id,
         "role_name": ROLE_NAME,
         "template_url": template_url,
@@ -146,16 +151,14 @@ def start(request: Request, response: Response):
 
 
 @router.post("/verify")
-def verify(body: VerifyBody, request: Request):
+def verify(body: VerifyBody, request: Request, response: Response):
     role_arn = body.role_arn.strip()
     if not ROLE_ARN_RE.fullmatch(role_arn):
         raise HTTPException(status_code=400, detail=f"Role ARN must look like arn:aws:iam::<12-digit account id>:role/{ROLE_NAME}.")
     sid = request.cookies.get(COOKIE_NAME)
-    with _lock:
-        entry = _sessions.get(sid)
-        if not entry:
-            raise HTTPException(status_code=400, detail="Start the connection first: close this window and click Connect AWS again.")
-        candidate = {**entry, "role_arn": role_arn}
+    if not _valid_sid(sid):
+        raise HTTPException(status_code=400, detail="Start the connection first: close this window and click Connect AWS again.")
+    candidate = {"role_arn": role_arn, "external_id": _external_id(sid)}
     try:
         session, expires = _assume(candidate)
         identity = session.client("sts").get_caller_identity()
@@ -167,10 +170,8 @@ def verify(body: VerifyBody, request: Request):
             detail=f"Could not assume the role ({code}). Check the ARN, that the stack finished creating, and that it used the External ID from this page.",
         ) from exc
     with _lock:
-        if sid in _sessions:
-            _sessions[sid]["role_arn"] = role_arn
-            _creds[sid] = {"session": session, "expires": expires}
-            _save_store()
+        _creds[sid] = {"session": session, "expires": expires}
+    _set_cookie(response, ROLE_COOKIE, _pack_role(sid, role_arn))
     return {"connected": True, "account_id": identity["Account"], "role_arn": role_arn}
 
 
@@ -185,25 +186,24 @@ def status(request: Request):
 
 
 @router.post("/disconnect")
-def disconnect(request: Request):
+def disconnect(request: Request, response: Response):
     sid = request.cookies.get(COOKIE_NAME)
     with _lock:
-        entry = _sessions.get(sid)
-        if entry:
-            entry["role_arn"] = None  # keep the ExternalId so an existing stack stays valid
-            _save_store()
         _creds.pop(sid, None)
+    # Keep the session id so an existing stack (same ExternalId) stays valid if they reconnect.
+    response.delete_cookie(ROLE_COOKIE, path="/")
     return {"connected": False}
 
 
 def get_connection(request: Request) -> dict | None:
     """The caller's connected role, or None if they are using the server's own account."""
     sid = request.cookies.get(COOKIE_NAME)
-    with _lock:
-        entry = _sessions.get(sid)
-        if entry and entry.get("role_arn"):
-            return {**entry, "sid": sid}
-    return None
+    if not _valid_sid(sid):
+        return None
+    role_arn = _unpack_role(sid, request.cookies.get(ROLE_COOKIE))
+    if not role_arn:
+        return None
+    return {"sid": sid, "role_arn": role_arn, "external_id": _external_id(sid)}
 
 
 def is_connected(request: Request) -> bool:
