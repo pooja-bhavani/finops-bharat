@@ -26,6 +26,38 @@ MAX_S3_BUCKETS = 300
 _BOTO_CONFIG = Config(retries={"max_attempts": 3, "mode": "standard"}, connect_timeout=5, read_timeout=20)
 
 
+# Services/types the dedicated scanners above already cover, so the catch-all skips them.
+_COVERED = {
+    ("ec2", "instance"), ("ec2", "volume"), ("ec2", "elastic-ip"), ("ec2", "natgateway"),
+    ("elasticloadbalancing", "loadbalancer"), ("rds", "db"), ("lambda", "function"),
+    ("dynamodb", "table"), ("eks", "cluster"), ("s3", ""),
+    # Dedicated scanners below, so brand-new untagged resources show up without any tag.
+    ("sqs", ""), ("sns", ""), ("ecs", "cluster"), ("elasticache", "cluster"), ("apigateway", ""),
+    ("states", "stateMachine"), ("kinesis", "stream"), ("secretsmanager", "secret"),
+    ("ecr", "repository"), ("cloudformation", "stack"),
+}
+_SERVICE_LABELS = {
+    "sqs": "SQS", "sns": "SNS", "ecs": "ECS", "ecr": "ECR", "elasticache": "ElastiCache",
+    "kms": "KMS", "states": "Step Functions", "apigateway": "API Gateway", "cloudfront": "CloudFront",
+    "logs": "CloudWatch Logs", "events": "EventBridge", "secretsmanager": "Secrets Manager",
+    "ssm": "Systems Manager", "es": "OpenSearch", "kinesis": "Kinesis", "route53": "Route 53",
+    "acm": "ACM", "cloudformation": "CloudFormation", "elasticbeanstalk": "Elastic Beanstalk",
+}
+_DEFAULT_TYPE = {"sqs": "Queue", "sns": "Topic", "kms": "Key", "secretsmanager": "Secret", "es": "Domain"}
+
+
+def _split_arn(arn: str) -> tuple[str, str, str]:
+    """Return (service, resource_type, resource_id) from an ARN, tolerant of every ARN shape."""
+    parts = arn.split(":", 5)
+    service = parts[2] if len(parts) > 2 else ""
+    tail = parts[5] if len(parts) > 5 else ""
+    for sep in ("/", ":"):
+        if sep in tail:
+            rtype, rid = tail.split(sep, 1)
+            return service, rtype, rid
+    return service, "", tail
+
+
 def _tag_name(tags: list[dict] | None, fallback: str) -> str:
     for tag in tags or []:
         if tag.get("Key") == "Name" and tag.get("Value"):
@@ -119,6 +151,17 @@ class AWSFinOpsScanner:
                 (region, "Lambda", "ListFunctions", self._lambda_functions),
                 (region, "DynamoDB", "ListTables", self._dynamodb_tables),
                 (region, "EKS", "ListClusters", self._eks_clusters),
+                (region, "SQS", "ListQueues", self._sqs_queues),
+                (region, "SNS", "ListTopics", self._sns_topics),
+                (region, "ECS", "ListClusters", self._ecs_clusters),
+                (region, "ElastiCache", "DescribeCacheClusters", self._elasticache_clusters),
+                (region, "API Gateway", "GetApis", self._api_gateways),
+                (region, "Step Functions", "ListStateMachines", self._state_machines),
+                (region, "Kinesis", "ListStreams", self._kinesis_streams),
+                (region, "Secrets Manager", "ListSecrets", self._secrets),
+                (region, "ECR", "DescribeRepositories", self._ecr_repositories),
+                (region, "CloudFormation", "DescribeStacks", self._cloudformation_stacks),
+                (region, "Tagging", "GetResources", self._other_resources),
             ]
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
@@ -248,6 +291,146 @@ class AWSFinOpsScanner:
                 out.append(_resource(
                     rid=name, name=name, service="EKS", category="Containers", rtype="Kubernetes cluster",
                     region=region, state=state, details=f"Kubernetes {version}".strip(),
+                ))
+        return out
+
+    # Services below are listed directly (not via tags) so a resource shows up the moment it exists.
+    def _sqs_queues(self, region: str) -> list[dict]:
+        client = self._client("sqs", region)
+        out = []
+        for page in client.get_paginator("list_queues").paginate():
+            for url in page.get("QueueUrls", []):
+                name = url.rsplit("/", 1)[-1]
+                out.append(_resource(
+                    rid=url, name=name, service="SQS", category="Messaging",
+                    rtype="FIFO queue" if name.endswith(".fifo") else "Queue", region=region, state="active",
+                ))
+        return out
+
+    def _sns_topics(self, region: str) -> list[dict]:
+        out = []
+        for page in self._client("sns", region).get_paginator("list_topics").paginate():
+            for topic in page.get("Topics", []):
+                arn = topic["TopicArn"]
+                out.append(_resource(
+                    rid=arn, name=arn.rsplit(":", 1)[-1], service="SNS", category="Messaging",
+                    rtype="Topic", region=region, state="active",
+                ))
+        return out
+
+    def _ecs_clusters(self, region: str) -> list[dict]:
+        client = self._client("ecs", region)
+        arns: list[str] = []
+        for page in client.get_paginator("list_clusters").paginate():
+            arns += page.get("clusterArns", [])
+        out = []
+        for i in range(0, len(arns), 100):
+            for cluster in client.describe_clusters(clusters=arns[i:i + 100]).get("clusters", []):
+                out.append(_resource(
+                    rid=cluster["clusterArn"], name=cluster.get("clusterName", ""), service="ECS",
+                    category="Containers", rtype="Cluster", region=region, state=cluster.get("status", "").lower(),
+                    details=f"{cluster.get('runningTasksCount', 0)} running tasks · {cluster.get('activeServicesCount', 0)} services",
+                ))
+        return out
+
+    def _elasticache_clusters(self, region: str) -> list[dict]:
+        out = []
+        for page in self._client("elasticache", region).get_paginator("describe_cache_clusters").paginate():
+            for c in page.get("CacheClusters", []):
+                out.append(_resource(
+                    rid=c["CacheClusterId"], name=c["CacheClusterId"], service="ElastiCache", category="Database",
+                    rtype=c.get("CacheNodeType", "Cache cluster"), region=region,
+                    state=c.get("CacheClusterStatus", ""), details=f"{c.get('Engine', '')} · {c.get('NumCacheNodes', '?')} node(s)",
+                ))
+        return out
+
+    def _api_gateways(self, region: str) -> list[dict]:
+        out = []
+        for page in self._client("apigateway", region).get_paginator("get_rest_apis").paginate():
+            for api in page.get("items", []):
+                out.append(_resource(
+                    rid=api["id"], name=api.get("name", api["id"]), service="API Gateway", category="Networking",
+                    rtype="REST API", region=region, state="active",
+                ))
+        for api in self._client("apigatewayv2", region).get_apis().get("Items", []):
+            out.append(_resource(
+                rid=api["ApiId"], name=api.get("Name", api["ApiId"]), service="API Gateway", category="Networking",
+                rtype=f"{api.get('ProtocolType', 'HTTP')} API", region=region, state="active",
+            ))
+        return out
+
+    def _state_machines(self, region: str) -> list[dict]:
+        out = []
+        for page in self._client("stepfunctions", region).get_paginator("list_state_machines").paginate():
+            for sm in page.get("stateMachines", []):
+                out.append(_resource(
+                    rid=sm["stateMachineArn"], name=sm["name"], service="Step Functions", category="Serverless",
+                    rtype=f"{sm.get('type', 'STANDARD').capitalize()} state machine", region=region, state="active",
+                ))
+        return out
+
+    def _kinesis_streams(self, region: str) -> list[dict]:
+        out = []
+        for page in self._client("kinesis", region).get_paginator("list_streams").paginate():
+            for name in page.get("StreamNames", []):
+                out.append(_resource(
+                    rid=name, name=name, service="Kinesis", category="Streaming", rtype="Data stream",
+                    region=region, state="active",
+                ))
+        return out
+
+    def _secrets(self, region: str) -> list[dict]:
+        out = []
+        for page in self._client("secretsmanager", region).get_paginator("list_secrets").paginate():
+            for sec in page.get("SecretList", []):
+                out.append(_resource(
+                    rid=sec["ARN"], name=sec.get("Name", ""), service="Secrets Manager", category="Security",
+                    rtype="Secret", region=region, state="active", details="Billed per secret per month",
+                ))
+        return out
+
+    def _ecr_repositories(self, region: str) -> list[dict]:
+        out = []
+        for page in self._client("ecr", region).get_paginator("describe_repositories").paginate():
+            for repo in page.get("repositories", []):
+                out.append(_resource(
+                    rid=repo["repositoryArn"], name=repo["repositoryName"], service="ECR", category="Containers",
+                    rtype="Repository", region=region, state="active", details=repo.get("repositoryUri", ""),
+                ))
+        return out
+
+    def _cloudformation_stacks(self, region: str) -> list[dict]:
+        out = []
+        for page in self._client("cloudformation", region).get_paginator("describe_stacks").paginate():
+            for stack in page.get("Stacks", []):
+                out.append(_resource(
+                    rid=stack["StackId"], name=stack["StackName"], service="CloudFormation", category="Management",
+                    rtype="Stack", region=region, state=stack.get("StackStatus", "").lower(),
+                ))
+        return out
+
+    def _other_resources(self, region: str) -> list[dict]:
+        """Catch-all: any other service's resources via the Resource Groups Tagging API.
+
+        Needs no setup in the customer's account. Limitation: AWS only returns resources that are
+        tagged or were tagged at some point, so a brand-new untagged resource of a service without a
+        dedicated scanner above can be missing. Tag it (any tag) and it appears.
+        """
+        out, seen = [], set()
+        paginator = self._client("resourcegroupstaggingapi", region).get_paginator("get_resources")
+        for page in paginator.paginate(ResourcesPerPage=100):
+            for item in page.get("ResourceTagMappingList", []):
+                arn = item.get("ResourceARN", "")
+                service, rtype, rid = _split_arn(arn)
+                if not service or (service, rtype) in _COVERED or arn in seen:
+                    continue
+                seen.add(arn)
+                fallback = (rid or arn).rsplit("/", 1)[-1]
+                label = _SERVICE_LABELS.get(service, service.upper() if len(service) <= 4 else service.capitalize())
+                out.append(_resource(
+                    rid=arn, name=_tag_name(item.get("Tags"), fallback), service=label, category="Other",
+                    rtype=(rtype or _DEFAULT_TYPE.get(service, "Resource")).replace("-", " ").capitalize(),
+                    region=region, state="active", details=arn,
                 ))
         return out
 
