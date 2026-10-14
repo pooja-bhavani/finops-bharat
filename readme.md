@@ -1,6 +1,6 @@
 # FinOps-Bharat 🇮🇳
 
-**FinOps-Bharat** is an open-source cloud financial management and cost optimization platform specifically tailored for Indian enterprises and cloud architectures. It allows organizations to gain real-time visibility into their AWS infrastructure, optimize spending, and implement cloud governance frameworks efficiently. 
+**FinOps-Bharat** is an open-source cloud financial management and cost optimization platform tailored for enterprises and cloud architectures. It allows organizations to gain real-time visibility into their AWS infrastructure, optimize spending, and implement cloud governance frameworks efficiently. 
 
 ---
 
