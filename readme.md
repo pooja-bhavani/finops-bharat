@@ -69,29 +69,16 @@ source venv/bin/activate
 pip install fastapi uvicorn boto3
 ```
 
-### Step 2: Environment Configuration
-Create a `.env` file in the root directory and add your required configuration details:
+### Step 2: Start FastAPI Backend
 ```bash
-cp .env.example .env
-# Edit the .env file with your local configuration parameters
-
-
-### Step 3: Install Dependencies
-Install all the required application packages:
-```bash
-# For Python-based backends
-pip install -r requirements.txt
-
-# For Node.js-based frontends/backends
-npm install
+uvicorn backend.main:app --reload --port 8000
 ```
 
 ### Step 4: Run the Application
 Launch the local development server to run the application end-to-end:
 ```bash
-# Example execution command
-python app.py
-# Or if using npm: npm start
+Start Vite React Frontend
+npm run dev
 ```
 Once started, open your web browser and navigate to `http://localhost:3000` (or the specified local port) to interact with the user interface.
 
