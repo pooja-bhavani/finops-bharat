@@ -114,7 +114,7 @@ GitHub Actions will automatically test, package, and deploy your code to Elastic
 
 ---
 
-## 🔐 Secure User Access & Account Scanning (Tester Guide)
+## Secure User Access & Account Scanning (Tester Guide)
 
 **Connect & Scan Your AWS Account**
 
@@ -136,17 +136,15 @@ Open the live FinOps-Bharat URL in your browser.
 
 5. Wait about a minute until the status shows CREATE_COMPLETE.
 
-
-
-### 🛡️ Critical Security Note on Data Retention
-> 💡 **Your data belongs to you.** Your AWS account scanning data is strictly visible to you in your active browser session **only once your current scan is completed**. Due to our stateless, security-first architecture, the moment you close the tab or refresh your browser page, **no data is retained or stored** by the application. You must re-initiate a secure session scan to view updated metrics.
+### Critical Security Note on Data Retention
+> **Your data belongs to you.** Your AWS account scanning data is strictly visible to you in your active browser session **only once your current scan is completed**. Due to our stateless, security-first architecture, the moment you close the tab or refresh your browser page, **no data is retained or stored** by the application. You must re-initiate a secure session scan to view updated metrics.
 
 ### No Long-Term Credentials Required
 To maintain an optimal security posture, **long-term credentials (like AWS Access Keys and Secret Keys) are strictly not required**. You can securely access and scan your cloud footprint solely via **AWS IAM Roles** or your **AWS Account ID**, ensuring your root or administrative environments remain fully isolated and protected.
 
 ---
 
-## 📊 App Usage Guide
+## App Usage Guide
 
 Once the application is up and running, end-users can leverage its core components via these steps:
 1. **Access the Dashboard:** Open the application interface in your browser.
@@ -156,7 +154,7 @@ Once the application is up and running, end-users can leverage its core componen
 
 ---
 
-## 🗑️ Application Deletion Guide (Cost & Resource Cleanup)
+## Application Deletion Guide (Cost & Resource Cleanup)
 
 If you are finished testing the platform and want to completely teardown the infrastructure to save local or cloud costs, follow this cleanup routine:
 
