@@ -8,6 +8,9 @@
 
 Follow these step-by-step instructions to clone, configure, and launch the entire application locally for testing purposes.
 
+
+Live demo: http://finops-bharat-env.eba-6yvcbyqr.ap-south-1.elasticbeanstalk.com/ (The demo is served over plain http:// for now, so use the full link including http://.)
+
 ### Prerequisites
 Before running the application, ensure you have the following installed on your machine:
 * **Git**
