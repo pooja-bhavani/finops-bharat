@@ -7,7 +7,7 @@ India's digital public services and growing startup ecosystem depend on reliable
 
 FinOps-Bharat surfaces observed account data for teams to review. An unattached resource is not proof that it is safe to delete, and Cost Explorer totals are not per-resource savings estimates.
 
-Live demo: http://finops-bharat-env.eba-6yvcbyqr.ap-south-1.elasticbeanstalk.com/ (The demo is served over plain http:// for now, so use the full link including http://.)
+**Live demo:** http://finops-bharat-env.eba-6yvcbyqr.ap-south-1.elasticbeanstalk.com/ (The demo is served over plain http:// for now, so use the full link including http://.)
 
 ---
 
