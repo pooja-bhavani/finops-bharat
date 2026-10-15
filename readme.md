@@ -2,14 +2,39 @@
 
 **FinOps-Bharat** is an open-source cloud financial management and cost optimization platform tailored for enterprises and cloud architectures. It allows organizations to gain real-time visibility into their AWS infrastructure, optimize spending, and implement cloud governance frameworks efficiently. 
 
+Why this matters
+India's digital public services and growing startup ecosystem depend on reliable cloud infrastructure. Unused disks, idle addresses, forgotten snapshots, and oversized environments can consume public and private budgets while also using energy. Those costs can limit money available for service delivery, innovation, connectivity, and digital skills.
+
+FinOps-Bharat surfaces observed account data for teams to review. An unattached resource is not proof that it is safe to delete, and Cost Explorer totals are not per-resource savings estimates.
+
+Live demo: http://finops-bharat-env.eba-6yvcbyqr.ap-south-1.elasticbeanstalk.com/ (The demo is served over plain http:// for now, so use the full link including http://.)
+
+---
+
+## Architecture Overview
+
+FinOps-Bharat is organized into clear, intuitive sections designed to give full visibility into your cloud footprint without overwhelming engineers:
+
+Section / Page
+
+**What It Does & Why It's Useful**
+1. Executive Overview Dashboard
+Command Center: Displays monthly spend trends, total waste recovery potential in ₹ (INR), avoided carbon footprint metrics, and a 6-month historical spend trajectory chart. It breaks down cost allocation across Compute, Storage, Database, and Networking categories so you know where your money goes.
+🔍 2. Resource Inventory Audit
+Deep-Dive Audit: Scans and lists unattached EBS volumes, unassociated Elastic IPs, stale EBS snapshots, and low-utilization EC2 instances. Each resource includes age tracking (e.g., unattached for 42 days), risk notes, and a 1-click CSV Export button for team reporting.
+🎓 3. Learn FinOps & Terminal Labs
+Hands-On Training: Includes structured educational guides on cloud bill analysis and policy enforcement, paired with an embedded TWS Terminal Labs sandbox. Developers can execute live AWS CLI audit and cleanup queries inside disposable, machine-graded container environments.
+🔑 4. AWS Cross-Account Scanner
+Stateless AWS Connection: Modal interface allowing users to connect their AWS account via 1-Click CloudFormation deployment. The backend uses temporary AWS STS credentials (AssumeRole) to perform read-only scans without storing secret keys.
+⚡ 5. FastAPI & Boto3 Backend
+Real-Time Scan Engine: High-performance Python backend (backend/main.py) executing live AWS API queries via Boto3. Filters available volumes, unassigned IPs, and EC2 instances in real time.
+
+
 ---
 
 ## 🚀 Getting Started (End-to-End Test Guide)
 
 Follow these step-by-step instructions to clone, configure, and launch the entire application locally for testing purposes.
-
-
-Live demo: http://finops-bharat-env.eba-6yvcbyqr.ap-south-1.elasticbeanstalk.com/ (The demo is served over plain http:// for now, so use the full link including http://.)
 
 ### Prerequisites
 Before running the application, ensure you have the following installed on your machine:
