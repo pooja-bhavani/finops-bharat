@@ -100,29 +100,43 @@ FinOps-Bharat is pre-configured with GitHub Actions (.github/workflows/deploy.ym
 * Environment Name: FinOps-bharat-env
 * Platform: Python 3.11 or Docker
 * Configure GitHub Repository Secrets: Go to GitHub Repo -> Settings -> Secrets and variables -> Actions and add:
-• AWS_ACCESS_KEY_ID: Your AWS deployment key ID
-AWS_SECRET_ACCESS_KEY: Your AWS secret key
-AWS_REGION: ap-south-1
-Trigger Deployment: Push any update to the main branch:
+* AWS_ACCESS_KEY_ID: Your AWS deployment key ID
+* AWS_SECRET_ACCESS_KEY: Your AWS secret key
+* AWS_REGION: ap-south-1
+
+**Trigger Deployment: Push any update to the main branch:**
+```
 git add .
 git commit -m "feat: deploy finops-bharat to elastic beanstalk"
 git push origin main
+```
 GitHub Actions will automatically test, package, and deploy your code to Elastic Beanstalk in under 2 minutes!
+
 ---
 
-## 🔐 Secure User Access & Account Scanning
+## 🔐 Secure User Access & Account Scanning (Tester Guide)
+
+**Connect & Scan Your AWS Account**
 
 FinOps-Bharat is engineered with security and data privacy at its core. Enterprise-grade monitoring does not require exposing sensitive long-term credentials.
 
 ### How to Get Your AWS Account Scanned
-To initiate an infrastructure cost audit, follow these simple configuration steps within your AWS Management Console:
 
-1. **Log in** to your AWS Management Console.
-2. **Navigate to IAM** (Identity and Access Management) and select **Roles**, then click **Create Role**.
-3. **Select Trust Entity Type** as "AWS Account" or "Custom Trust Policy" depending on cross-account setups.
-4. **Attach Read-Only Policies** (e.g., `SecurityAudit`, `ReadOnlyAccess`, or custom billing view policies) to ensure FinOps-Bharat can only read resource metadata without altering configurations.
-5. **Copy the Role ARN** or note your **AWS Account ID**.
-6. **Input the Identity Details** directly into the FinOps-Bharat web interface dashboard to kick off the scanning mechanism.
+**Create the read-only role**
+
+Open the live FinOps-Bharat URL in your browser.
+
+1. Open the live FinOps-Bharat URL in your browser.
+
+2. Click Connect AWS in the top bar.
+
+3. Click Launch CloudFormation stack. This opens the AWS CloudFormation console in your own account with a read-only IAM role (FinOpsBharatReadOnly) prefilled. It includes a one-time External ID unique to your browser session. Don’t change it.
+
+4. Leave Permissions empty, tick the IAM acknowledgement box at the bottom, and click Create stack.
+
+5. Wait about a minute until the status shows CREATE_COMPLETE.
+
+
 
 ### 🛡️ Critical Security Note on Data Retention
 > 💡 **Your data belongs to you.** Your AWS account scanning data is strictly visible to you in your active browser session **only once your current scan is completed**. Due to our stateless, security-first architecture, the moment you close the tab or refresh your browser page, **no data is retained or stored** by the application. You must re-initiate a secure session scan to view updated metrics.
