@@ -7,8 +7,6 @@ India's digital public services and growing startup ecosystem depend on reliable
 
 FinOps-Bharat surfaces observed account data for teams to review. An unattached resource is not proof that it is safe to delete, and Cost Explorer totals are not per-resource savings estimates.
 
-**Live demo:** http://finops-bharat-env.eba-6yvcbyqr.ap-south-1.elasticbeanstalk.com/ (The demo is served over plain http:// for now, so use the full link including http://.)
-
 ---
 
 ## Architecture Overview
@@ -175,3 +173,5 @@ If you created any IAM components or resources during testing:
 
 ---
 *Live Project Demo Available At:* [FinOps-Bharat Environment](http://finops-bharat-env.eba-6yvcbyqr.ap-south-1.elasticbeanstalk.com/)
+
+> **Note on the demo link:** The live demo is served over plain http:// for now (HTTPS isn’t set up yet). Some browsers open the address as https:// by default, which shows an error such as “This site can’t be reached” (ERR_CONNECTION_TIMED_OUT). If that happens, type or paste the full address including http://:
