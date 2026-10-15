@@ -4,9 +4,6 @@
 
 <img width="1470" height="838" alt="Screenshot 2026-10-15 at 3 26 28 pm" src="https://github.com/user-attachments/assets/0b91b51b-c2e3-4b4d-ae2e-d5fd5af701f6" />
 
-<img width="1470" height="838" alt="Screenshot 2026-10-15 at 3 27 32 pm" src="https://github.com/user-attachments/assets/3d597f35-3af6-40ed-9883-3202a5875bb6" />
-
-
 Why this matters
 India's digital public services and growing startup ecosystem depend on reliable cloud infrastructure. Unused disks, idle addresses, forgotten snapshots, and oversized environments can consume public and private budgets while also using energy. Those costs can limit money available for service delivery, innovation, connectivity, and digital skills.
 
