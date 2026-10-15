@@ -89,8 +89,25 @@ Start Vite React Frontend
 npm run dev
 ```
 
-Once started, open your web browser and navigate to `http://localhost:3000` (or the specified local port) to interact with the user interface.
+Visit http://localhost:5173 in your browser to view the app!
 
+### 4. End-to-End Automated Deployment on AWS Elastic Beanstalk
+
+FinOps-Bharat is pre-configured with GitHub Actions (.github/workflows/deploy.yml) for automated deployments:
+
+* Create an Elastic Beanstalk Environment in AWS (ap-south-1 / Mumbai):
+* Application Name: finops-bharat
+* Environment Name: FinOps-bharat-env
+* Platform: Python 3.11 or Docker
+* Configure GitHub Repository Secrets: Go to GitHub Repo -> Settings -> Secrets and variables -> Actions and add:
+• AWS_ACCESS_KEY_ID: Your AWS deployment key ID
+AWS_SECRET_ACCESS_KEY: Your AWS secret key
+AWS_REGION: ap-south-1
+Trigger Deployment: Push any update to the main branch:
+git add .
+git commit -m "feat: deploy finops-bharat to elastic beanstalk"
+git push origin main
+GitHub Actions will automatically test, package, and deploy your code to Elastic Beanstalk in under 2 minutes!
 ---
 
 ## 🔐 Secure User Access & Account Scanning
