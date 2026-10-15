@@ -15,7 +15,7 @@ Live demo: http://finops-bharat-env.eba-6yvcbyqr.ap-south-1.elasticbeanstalk.com
 
 FinOps-Bharat is organized into clear, intuitive sections designed to give full visibility into your cloud footprint without overwhelming engineers:
 
-Section / Page
+**Each section explained**
 
 **What It Does & Why It's Useful**
 1. Executive Overview Dashboard
