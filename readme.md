@@ -17,9 +17,13 @@ FinOps-Bharat is organized into clear, intuitive sections designed to give full 
 
 **What It Does & Why It's Useful**
 
-| Component                  | Language | Container Image                                                                                                                                     | Description                             |
-| -------------------------- | -------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------- |
-| Executive Overview Dashboard | Displays monthly spend trends, total waste recovery potential in ₹ (INR), avoided carbon footprint metrics, and a 6-month historical spend trajectory chart. It breaks down cost allocation across Compute, Storage, Database, and Networking categories so you know where your money goes.
+| Section / Component | What It Does & Key Features |
+| :--- | :--- |
+| 📊 **1. Executive Overview Dashboard** | Displays monthly spend trends, total waste recovery potential in **₹ (INR)**, avoided carbon footprint metrics, and a 6-month historical spend trajectory chart. Breaks down cost allocation across Compute, Storage, Database, and Networking categories so you know where your money goes. |
+| 🔍 **2. Resource Inventory Audit** | **Deep-Dive Audit:** Scans and lists unattached EBS volumes, unassociated Elastic IPs, stale EBS snapshots, and low-utilization EC2 instances. Each resource includes age tracking (e.g., *unattached for 42 days*), risk notes, and a 1-click **CSV Export** button for team reporting. |
+| 🎓 **3. Learn FinOps & Terminal Labs** | **Hands-On Training:** Includes structured educational guides on cloud bill analysis and policy enforcement, paired with an embedded **TWS Terminal Labs** sandbox. Developers can execute live AWS CLI audit and cleanup queries inside disposable, machine-graded container environments. |
+| 🔑 **4. AWS Cross-Account Scanner** | **Stateless AWS Connection:** Modal interface allowing users to connect their AWS account via 1-Click CloudFormation deployment. The backend uses temporary AWS STS credentials (`AssumeRole`) to perform read-only scans without storing secret keys. |
+| ⚡ **5. FastAPI & Boto3 Backend** | **Real-Time Scan Engine:** High-performance Python backend (`backend/main.py`) executing live AWS API queries via Boto3. Filters available volumes, unassigned IPs, and EC2 instances in real time. |
 
 
 1. Executive Overview Dashboard
