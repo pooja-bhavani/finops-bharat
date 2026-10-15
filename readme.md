@@ -15,20 +15,27 @@ Live demo: http://finops-bharat-env.eba-6yvcbyqr.ap-south-1.elasticbeanstalk.com
 
 FinOps-Bharat is organized into clear, intuitive sections designed to give full visibility into your cloud footprint without overwhelming engineers:
 
-**Each section explained**
-
 **What It Does & Why It's Useful**
-1. Executive Overview Dashboard
-Command Center: Displays monthly spend trends, total waste recovery potential in ₹ (INR), avoided carbon footprint metrics, and a 6-month historical spend trajectory chart. It breaks down cost allocation across Compute, Storage, Database, and Networking categories so you know where your money goes.
-🔍 2. Resource Inventory Audit
-Deep-Dive Audit: Scans and lists unattached EBS volumes, unassociated Elastic IPs, stale EBS snapshots, and low-utilization EC2 instances. Each resource includes age tracking (e.g., unattached for 42 days), risk notes, and a 1-click CSV Export button for team reporting.
-🎓 3. Learn FinOps & Terminal Labs
-Hands-On Training: Includes structured educational guides on cloud bill analysis and policy enforcement, paired with an embedded TWS Terminal Labs sandbox. Developers can execute live AWS CLI audit and cleanup queries inside disposable, machine-graded container environments.
-🔑 4. AWS Cross-Account Scanner
-Stateless AWS Connection: Modal interface allowing users to connect their AWS account via 1-Click CloudFormation deployment. The backend uses temporary AWS STS credentials (AssumeRole) to perform read-only scans without storing secret keys.
-⚡ 5. FastAPI & Boto3 Backend
-Real-Time Scan Engine: High-performance Python backend (backend/main.py) executing live AWS API queries via Boto3. Filters available volumes, unassigned IPs, and EC2 instances in real time.
 
+1. Executive Overview Dashboard
+
+Displays monthly spend trends, total waste recovery potential in ₹ (INR), avoided carbon footprint metrics, and a 6-month historical spend trajectory chart. It breaks down cost allocation across Compute, Storage, Database, and Networking categories so you know where your money goes.
+
+2. Resource Inventory Audit
+
+Deep-Dive Audit: Scans and lists unattached EBS volumes, unassociated Elastic IPs, stale EBS snapshots, and low-utilization EC2 instances. Each resource includes age tracking (e.g., unattached for 42 days), risk notes, and a 1-click CSV Export button for team reporting.
+
+3. Learn FinOps & Terminal Labs
+
+Hands-On Training: Includes structured educational guides on cloud bill analysis and policy enforcement, paired with an embedded TWS Terminal Labs sandbox. Developers can execute live AWS CLI audit and cleanup queries inside disposable, machine-graded container environments.
+
+4. AWS Cross-Account Scanner
+   
+Stateless AWS Connection: Modal interface allowing users to connect their AWS account via 1-Click CloudFormation deployment. The backend uses temporary AWS STS credentials (AssumeRole) to perform read-only scans without storing secret keys.
+
+5. FastAPI & Boto3 Backend
+
+Real-Time Scan Engine: High-performance Python backend (backend/main.py) executing live AWS API queries via Boto3. Filters available volumes, unassigned IPs, and EC2 instances in real time.
 
 ---
 
@@ -39,7 +46,8 @@ Follow these step-by-step instructions to clone, configure, and launch the entir
 ### Prerequisites
 Before running the application, ensure you have the following installed on your machine:
 * **Git**
-* **Python 3.9+** or **Node.js** (depending on your stack's primary runtime environment)
+* **Node.js (v18+) & npm**
+* **Python (v3.10+) & pip** 
 * **AWS CLI** (configured with read-only permissions for testing)
 
 ### Step 1: Clone the Repository
@@ -49,12 +57,24 @@ git clone https://github.com/your-username/finops-bharat.git
 cd finops-bharat
 ```
 
+# Install Frontend dependencies
+```
+npm install
+
+# Create & activate Python virtual environment for Backend
+python3 -m venv venv
+source venv/bin/activate
+
+# Install Backend dependencies
+pip install fastapi uvicorn boto3
+```
+
 ### Step 2: Environment Configuration
 Create a `.env` file in the root directory and add your required configuration details:
 ```bash
 cp .env.example .env
 # Edit the .env file with your local configuration parameters
-```
+
 
 ### Step 3: Install Dependencies
 Install all the required application packages:
