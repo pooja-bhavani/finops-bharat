@@ -25,7 +25,7 @@ FinOps-Bharat is organized into clear, intuitive sections designed to give full 
 
 ---
 
-## 🚀 Getting Started (End-to-End Test Guide)
+## Getting Started (End-to-End Test Guide)
 
 Follow these step-by-step instructions to clone, configure, and launch the entire application locally for testing purposes.
 
