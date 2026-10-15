@@ -17,6 +17,11 @@ FinOps-Bharat is organized into clear, intuitive sections designed to give full 
 
 **What It Does & Why It's Useful**
 
+| Component                  | Language | Container Image                                                                                                                                     | Description                             |
+| -------------------------- | -------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------- |
+| Executive Overview Dashboard | Displays monthly spend trends, total waste recovery potential in ₹ (INR), avoided carbon footprint metrics, and a 6-month historical spend trajectory chart. It breaks down cost allocation across Compute, Storage, Database, and Networking categories so you know where your money goes.
+
+
 1. Executive Overview Dashboard
 
 Displays monthly spend trends, total waste recovery potential in ₹ (INR), avoided carbon footprint metrics, and a 6-month historical spend trajectory chart. It breaks down cost allocation across Compute, Storage, Database, and Networking categories so you know where your money goes.
