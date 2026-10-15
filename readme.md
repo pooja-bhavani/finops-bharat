@@ -57,7 +57,7 @@ git clone https://github.com/your-username/finops-bharat.git
 cd finops-bharat
 ```
 
-# Install Frontend dependencies
+### Install Frontend dependencies
 ```
 npm install
 
