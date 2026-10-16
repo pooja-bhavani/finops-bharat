@@ -247,44 +247,23 @@ function App() {
     }
   }, []);
 
-  const runScan = useCallback(async (selectedRegion, { silent = false } = {}) => {
+  const runScan = useCallback(async (selectedRegion) => {
     if (!selectedRegion) return;
     const normalizedRegion = String(selectedRegion).trim();
     if (!normalizedRegion) return;
-    if (!silent) {
-      setScanLoading(true);
-      setScanError('');
-    }
+    setScanLoading(true);
+    setScanError('');
     try {
       const result = await requestJson(`/api/aws/scan?region=${encodeURIComponent(normalizedRegion)}`);
       setScan(result);
       setScanError('');
     } catch (error) {
-      // A background refresh that fails keeps the last good inventory on screen.
-      if (!silent) {
-        setScan(null);
-        setScanError(error.message);
-      }
+      setScan(null);
+      setScanError(error.message);
     } finally {
-      if (!silent) setScanLoading(false);
+      setScanLoading(false);
     }
   }, []);
-
-  // Live view: re-scan in the background while the tab is visible. "All regions" is heavier, so it waits longer.
-  const [autoRefresh, setAutoRefresh] = useState(() => {
-    try { return localStorage.getItem('finops-auto-refresh') !== 'off'; } catch { return true; }
-  });
-  useEffect(() => {
-    try { localStorage.setItem('finops-auto-refresh', autoRefresh ? 'on' : 'off'); } catch { /* ignore */ }
-  }, [autoRefresh]);
-  useEffect(() => {
-    if (!autoRefresh || !region || needsConnection) return undefined;
-    const everyMs = String(region).toLowerCase() === 'all' ? 180000 : 60000;
-    const timer = window.setInterval(() => {
-      if (!document.hidden) void runScan(region, { silent: true });
-    }, everyMs);
-    return () => window.clearInterval(timer);
-  }, [autoRefresh, region, runScan, needsConnection]);
 
   const loadCloudOps = useCallback(async () => {
     if (!moduleRegion) return;
@@ -531,10 +510,6 @@ function App() {
             onDisconnect={disconnect}
             openRequest={connectRequest}
           />
-          <label className="auto-refresh" title="Re-scan automatically every minute while this tab is open">
-            <input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />
-            Live
-          </label>
           <button className="connect-button" disabled={scanLoading || !region} onClick={() => runScan(region)}>
             {scanLoading ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
             {scanLoading ? 'Scanning AWS' : 'Refresh inventory'}
