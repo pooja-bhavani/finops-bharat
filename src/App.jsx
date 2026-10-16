@@ -1209,9 +1209,19 @@ function LabsPage() {
       </p>
       <ol>{steps.map((step) => <li key={step}>{step}</li>)}</ol>
       {LABS_URL ? (
-        <a className="button" href={LABS_URL} target="_blank" rel="noopener noreferrer">
-          Open the terminal lab <ExternalLink size={14} />
-        </a>
+        <>
+          <iframe
+            title="TWS Labs terminal"
+            src={LABS_URL}
+            style={{ width: '100%', height: '78vh', border: '1px solid var(--border, #333)', borderRadius: 8 }}
+            allow="clipboard-read; clipboard-write; fullscreen"
+          />
+          <p>
+            <a href={LABS_URL} target="_blank" rel="noopener noreferrer">
+              Open in a full tab <ExternalLink size={14} />
+            </a>
+          </p>
+        </>
       ) : (
         <p>The lab terminal is not connected yet. Set <code>VITE_LABS_URL</code> to your TWS Labs address and rebuild.</p>
       )}
