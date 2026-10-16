@@ -14,7 +14,6 @@ const navigation = [
   { id: 'containers', label: 'Containers & ECR', icon: Container },
   { id: 'devops', label: 'DevOps & governance', icon: Workflow },
   { id: 'learn', label: 'FinOps learning guide', icon: BookOpen },
-  { id: 'labs', label: 'Hands-on labs', icon: Terminal },
 ];
 
 const regionGroups = [
@@ -634,7 +633,6 @@ function App() {
           })),
         })}
       />}
-      {page === 'labs' && <LabsPage />}
       {!needsConnection && page === 'learn' && <LearningGuide
         account={account}
         costs={costs}
@@ -659,6 +657,7 @@ function App() {
         onOpenOverview={() => setPage('overview')}
       />}
       <footer className="footer"><span>FinOps-Bharat</span><span>Live AWS, GitHub & webhook integrations · review-only AWS actions</span></footer>
+      <TerminalDrawer />
     </main>
     {toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}
   </div>;
@@ -1192,40 +1191,67 @@ function Overview({
   </div>;
 }
 
-const LABS_URL = import.meta.env.VITE_LABS_URL || '';
+const LABS_URL = import.meta.env.VITE_TWS_LABS_URL
+  || (typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname) ? 'http://localhost:8080' : '');
 
-function LabsPage() {
-  const steps = [
-    'Find the unassociated Elastic IPs and save their allocation IDs.',
-    'List the NAT gateways in the available state.',
-    'Find EBS volumes that are not attached to any instance.',
-  ];
+function TerminalDrawer() {
+  const [open, setOpen] = useState(false);
+  const [height, setHeight] = useState(() => Math.round(window.innerHeight * 0.5));
+  const [resizing, setResizing] = useState(false);
+
+  const startResize = (event) => {
+    event.preventDefault();
+    setResizing(true);
+    const move = (e) => {
+      const y = e.touches ? e.touches[0].clientY : e.clientY;
+      setHeight(Math.min(Math.max(window.innerHeight - y, 240), window.innerHeight - 80));
+    };
+    const stop = () => {
+      setResizing(false);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', stop);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', stop);
+  };
+
   return (
-    <section className="panel">
-      <h2>Hands-on labs</h2>
-      <p>
-        Practice the same audit this dashboard does, by hand, in a real terminal. Each lab gives you short
-        graded steps and checks the result. The labs run in a separate sandbox and never receive your AWS keys.
-      </p>
-      <ol>{steps.map((step) => <li key={step}>{step}</li>)}</ol>
-      {LABS_URL ? (
-        <>
-          <iframe
-            title="TWS Labs terminal"
-            src={LABS_URL}
-            style={{ width: '100%', height: '78vh', border: '1px solid var(--border, #333)', borderRadius: 8 }}
-            allow="clipboard-read; clipboard-write; fullscreen"
-          />
-          <p>
-            <a href={LABS_URL} target="_blank" rel="noopener noreferrer">
-              Open in a full tab <ExternalLink size={14} />
-            </a>
-          </p>
-        </>
+    <aside
+      className={`tws-drawer ${open ? '' : 'tws-drawer-minimized'} ${resizing ? 'tws-drawer-resizing' : ''}`}
+      style={open ? { height } : undefined}
+      aria-label="Hands-on terminal labs"
+    >
+      {open && <div className="terminal-drag-handle" onPointerDown={startResize} role="separator" aria-label="Resize terminal" />}
+      <div className="tws-drawer-header">
+        <div>
+          <Terminal size={16} />
+          <strong>Hands-on labs</strong>
+          <span>TWS Labs terminal: practice the same audit by hand</span>
+        </div>
+        <div className="tws-drawer-actions">
+          {LABS_URL && <a href={LABS_URL} target="_blank" rel="noopener noreferrer">Open in a tab <ExternalLink size={12} /></a>}
+          <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+            {open ? 'Minimize' : 'Open terminal'}
+          </button>
+        </div>
+      </div>
+      {open && (LABS_URL ? (
+        <iframe
+          className="tws-terminal-frame"
+          title="TWS Labs terminal"
+          src={LABS_URL}
+          allow="clipboard-read; clipboard-write; fullscreen"
+        />
       ) : (
-        <p>The lab terminal is not connected yet. Set <code>VITE_LABS_URL</code> to your TWS Labs address and rebuild.</p>
-      )}
-    </section>
+        <div className="tws-drawer-setup">
+          <p>The lab terminal is not connected yet.</p>
+          <p>Run TWS Labs separately and set <code>VITE_TWS_LABS_URL</code> to its address when you build this app.</p>
+          <a href="https://github.com/TrainWithShubham/tws-labs" target="_blank" rel="noopener noreferrer">
+            TWS Labs on GitHub <ExternalLink size={12} />
+          </a>
+        </div>
+      ))}
+    </aside>
   );
 }
 
