@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react
 import {
   Activity, AlertCircle, BookOpen, Check, ChevronDown, Cloud, Download,
   ExternalLink, LayoutDashboard, LoaderCircle, RefreshCw, Search, Server, X,
-  ShieldCheck, Trophy, Container, Tags, Workflow, Bell, Moon, Sun,
+  ShieldCheck, Trophy, Container, Tags, Workflow, Bell, Moon, Sun, Terminal,
 } from 'lucide-react';
 
 const SpendChart = lazy(() => import('./SpendChart.jsx'));
@@ -14,6 +14,7 @@ const navigation = [
   { id: 'containers', label: 'Containers & ECR', icon: Container },
   { id: 'devops', label: 'DevOps & governance', icon: Workflow },
   { id: 'learn', label: 'FinOps learning guide', icon: BookOpen },
+  { id: 'labs', label: 'Hands-on labs', icon: Terminal },
 ];
 
 const regionGroups = [
@@ -247,23 +248,44 @@ function App() {
     }
   }, []);
 
-  const runScan = useCallback(async (selectedRegion) => {
+  const runScan = useCallback(async (selectedRegion, { silent = false } = {}) => {
     if (!selectedRegion) return;
     const normalizedRegion = String(selectedRegion).trim();
     if (!normalizedRegion) return;
-    setScanLoading(true);
-    setScanError('');
+    if (!silent) {
+      setScanLoading(true);
+      setScanError('');
+    }
     try {
       const result = await requestJson(`/api/aws/scan?region=${encodeURIComponent(normalizedRegion)}`);
       setScan(result);
       setScanError('');
     } catch (error) {
-      setScan(null);
-      setScanError(error.message);
+      // A background refresh that fails keeps the last good inventory on screen.
+      if (!silent) {
+        setScan(null);
+        setScanError(error.message);
+      }
     } finally {
-      setScanLoading(false);
+      if (!silent) setScanLoading(false);
     }
   }, []);
+
+  // Live view: re-scan in the background while the tab is visible. "All regions" is heavier, so it waits longer.
+  const [autoRefresh, setAutoRefresh] = useState(() => {
+    try { return localStorage.getItem('finops-auto-refresh') !== 'off'; } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('finops-auto-refresh', autoRefresh ? 'on' : 'off'); } catch { /* ignore */ }
+  }, [autoRefresh]);
+  useEffect(() => {
+    if (!autoRefresh || !region || needsConnection) return undefined;
+    const everyMs = String(region).toLowerCase() === 'all' ? 180000 : 60000;
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void runScan(region, { silent: true });
+    }, everyMs);
+    return () => window.clearInterval(timer);
+  }, [autoRefresh, region, runScan, needsConnection]);
 
   const loadCloudOps = useCallback(async () => {
     if (!moduleRegion) return;
@@ -510,6 +532,10 @@ function App() {
             onDisconnect={disconnect}
             openRequest={connectRequest}
           />
+          <label className="auto-refresh" title="Re-scan automatically every minute while this tab is open">
+            <input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />
+            Live
+          </label>
           <button className="connect-button" disabled={scanLoading || !region} onClick={() => runScan(region)}>
             {scanLoading ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
             {scanLoading ? 'Scanning AWS' : 'Refresh inventory'}
@@ -608,6 +634,7 @@ function App() {
           })),
         })}
       />}
+      {page === 'labs' && <LabsPage />}
       {!needsConnection && page === 'learn' && <LearningGuide
         account={account}
         costs={costs}
@@ -1163,6 +1190,33 @@ function Overview({
     <div className="disclaimer-line"><ShieldCheck size={15} /><span>Inventory and costs are live AWS responses. Cost Explorer amounts may be delayed and are not a per-resource savings calculation. No remediation actions are performed.</span></div>
     <AccountDetails account={account} />
   </div>;
+}
+
+const LABS_URL = import.meta.env.VITE_LABS_URL || '';
+
+function LabsPage() {
+  const steps = [
+    'Find the unassociated Elastic IPs and save their allocation IDs.',
+    'List the NAT gateways in the available state.',
+    'Find EBS volumes that are not attached to any instance.',
+  ];
+  return (
+    <section className="panel">
+      <h2>Hands-on labs</h2>
+      <p>
+        Practice the same audit this dashboard does, by hand, in a real terminal. Each lab gives you short
+        graded steps and checks the result. The labs run in a separate sandbox and never receive your AWS keys.
+      </p>
+      <ol>{steps.map((step) => <li key={step}>{step}</li>)}</ol>
+      {LABS_URL ? (
+        <a className="button" href={LABS_URL} target="_blank" rel="noopener noreferrer">
+          Open the terminal lab <ExternalLink size={14} />
+        </a>
+      ) : (
+        <p>The lab terminal is not connected yet. Set <code>VITE_LABS_URL</code> to your TWS Labs address and rebuild.</p>
+      )}
+    </section>
+  );
 }
 
 function LearningGuide({
