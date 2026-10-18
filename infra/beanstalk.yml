@@ -1,0 +1,121 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  FinOps-Bharat on AWS Elastic Beanstalk (Docker, single instance), created as code.
+  Creates the application, the environment, the instance and service roles, and
+  CloudWatch log streaming. The code itself is deployed by GitHub Actions, so a new
+  environment starts with Elastic Beanstalk's sample app until the next push to master.
+
+Parameters:
+  ApplicationName:
+    Type: String
+    Default: finops-bharat
+    Description: Elastic Beanstalk application name (must match application_name in .github/workflows/deploy.yml).
+  EnvironmentName:
+    Type: String
+    Default: Finops-bharat-env
+    Description: Environment name (must match environment_name in the workflow). Use another name, e.g. Finops-bharat-env-test, to try this beside a live environment.
+    MinLength: 4
+    MaxLength: 40
+  SolutionStackName:
+    Type: String
+    Description: >-
+      Docker platform, copy the newest line from:
+      aws elasticbeanstalk list-available-solution-stacks --region ap-south-1 --query "SolutionStacks[?contains(@, 'Docker') && contains(@, 'Amazon Linux 2023')]|[0]" --output text
+    AllowedPattern: "^64bit Amazon Linux 2023 .*Docker.*$"
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues: [t3.micro, t3.small, t3.medium]
+  FinopsSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: Long random secret (at least 32 characters). Signs session cookies and derives each visitor's External ID.
+  CookieSecure:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "false while the site is plain HTTP, true once HTTPS is on."
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    AllowedValues: [1, 3, 5, 7, 14, 30]
+
+Resources:
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier
+      Policies:
+        - PolicyName: AssumeVisitorReadOnlyRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # The app can only assume the read-only role that visitors create from the CloudFormation template.
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: arn:aws:iam::*:role/FinOpsBharatReadOnly
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  ServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: elasticbeanstalk.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: elasticbeanstalk
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy
+
+  Application:
+    Type: AWS::ElasticBeanstalk::Application
+    Properties:
+      ApplicationName: !Ref ApplicationName
+      Description: FinOps-Bharat, a read-only AWS cost and resource dashboard
+
+  Environment:
+    Type: AWS::ElasticBeanstalk::Environment
+    Properties:
+      ApplicationName: !Ref Application
+      EnvironmentName: !Ref EnvironmentName
+      SolutionStackName: !Ref SolutionStackName
+      OptionSettings:
+        - { Namespace: "aws:elasticbeanstalk:environment", OptionName: EnvironmentType, Value: SingleInstance }
+        - { Namespace: "aws:elasticbeanstalk:environment", OptionName: ServiceRole, Value: !Ref ServiceRole }
+        - { Namespace: "aws:autoscaling:launchconfiguration", OptionName: IamInstanceProfile, Value: !Ref InstanceProfile }
+        - { Namespace: "aws:ec2:instances", OptionName: InstanceTypes, Value: !Ref InstanceType }
+        - { Namespace: "aws:elasticbeanstalk:healthreporting:system", OptionName: SystemType, Value: enhanced }
+        - { Namespace: "aws:elasticbeanstalk:application", OptionName: "Application Healthcheck URL", Value: /api/health }
+        # Observability: stream application logs to CloudWatch Logs.
+        - { Namespace: "aws:elasticbeanstalk:cloudwatch:logs", OptionName: StreamLogs, Value: "true" }
+        - { Namespace: "aws:elasticbeanstalk:cloudwatch:logs", OptionName: DeleteOnTerminate, Value: "true" }
+        - { Namespace: "aws:elasticbeanstalk:cloudwatch:logs", OptionName: RetentionInDays, Value: !Ref LogRetentionDays }
+        # Environment properties (the rest, PORT / APP_ENV / health path, ship with the code in .ebextensions).
+        - { Namespace: "aws:elasticbeanstalk:application:environment", OptionName: FINOPS_SECRET, Value: !Ref FinopsSecret }
+        - { Namespace: "aws:elasticbeanstalk:application:environment", OptionName: COOKIE_SECURE, Value: !Ref CookieSecure }
+        - { Namespace: "aws:elasticbeanstalk:application:environment", OptionName: APP_AWS_ACCOUNT_ID, Value: !Ref "AWS::AccountId" }
+        - { Namespace: "aws:elasticbeanstalk:application:environment", OptionName: FINOPS_ALLOW_SERVER_ACCOUNT, Value: "false" }
+
+Outputs:
+  EnvironmentUrl:
+    Description: Open this with http:// (the demo has no HTTPS yet).
+    Value: !Sub "http://${Environment.EndpointURL}"
+  InstanceRoleArn:
+    Value: !GetAtt InstanceRole.Arn
