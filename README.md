@@ -154,6 +154,13 @@ Once the application is up and running, end-users can leverage its core componen
 
 ---
 
+## Infrastructure as code
+
+`infra/beanstalk.yml` is a CloudFormation template for the Beanstalk environment
+(application, environment, IAM roles, CloudWatch log streaming).
+Code is still deployed by GitHub Actions; this builds the environment it runs in.
+Rebuild steps are in docs/DEPLOY.md.
+
 ## Application Deletion Guide (Cost & Resource Cleanup)
 
 If you are finished testing the platform and want to completely teardown the infrastructure to save local or cloud costs, follow this cleanup routine:
@@ -165,6 +172,7 @@ If you are finished testing the platform and want to completely teardown the inf
    cd ..
    rm -rf finops-bharat
    ```
+---
 
 ### AWS Cloud Cleanup
 If you created any IAM components or resources during testing:
