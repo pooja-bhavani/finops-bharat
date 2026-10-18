@@ -6,8 +6,6 @@ RUN npm ci
 
 COPY index.html vite.config.js ./
 COPY src ./src
-ARG VITE_TWS_LABS_URL
-ENV VITE_TWS_LABS_URL=${VITE_TWS_LABS_URL}
 RUN npm run build
 
 FROM python:3.11-slim
