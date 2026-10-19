@@ -655,7 +655,7 @@ function DevOpsGovernance({
     />
 
     <section className="governance-grid">
-      <ContainersEcrPanel kubernetes={cloudOps.kubernetes} ecr={cloudOps.ecr} errors={errors} loading={loading} region={region} action={action} results={results} onPlanEcrCleanup={onPlanEcrCleanup} />
+      <PipelinePanel />
 
       <article className="panel governance-card">
         <div className="panel-heading"><div><h2><Tags size={16} /> Tagging & auto-parking governance</h2><p>Required tags: Owner, Environment, CostCenter</p></div></div>
@@ -712,6 +712,26 @@ function DevOpsGovernance({
       </section>
     </div>}
   </div>;
+}
+
+function PipelinePanel() {
+  const steps = [
+    ['1. Push to GitHub', 'Every change to master starts the pipeline.'],
+    ['2. Automated tests', '26 tests run against a fake AWS account. If one fails, nothing is deployed.'],
+    ['3. Deploy', 'GitHub Actions ships the Docker image to AWS Elastic Beanstalk.'],
+    ['4. Health check', 'Beanstalk calls /api/health to confirm the new version is alive.'],
+  ];
+  return <article className="panel governance-card governance-wide">
+    <div className="panel-heading"><div><h2><Workflow size={16} /> How FinOps-Bharat itself is delivered</h2><p>The DevOps pipeline behind this app</p></div></div>
+    {steps.map(([title, text]) => <p className="module-note" key={title}><strong>{title}</strong> {text}</p>)}
+    <p className="module-note">The Elastic Beanstalk environment is also written as code (CloudFormation, <code>infra/beanstalk.yml</code>), so it can be rebuilt from the repo with one command.</p>
+    <p className="module-note">
+      <a href="https://github.com/pooja-bhavani/finops-bharat/actions" target="_blank" rel="noreferrer">See pipeline runs</a>
+      {' · '}
+      <a href="https://github.com/pooja-bhavani/finops-bharat" target="_blank" rel="noreferrer">View the repository</a>
+    </p>
+    <p className="module-note">EKS cluster utilization and the ECR image audit are on the Containers &amp; ECR page.</p>
+  </article>;
 }
 
 function ContainersPage({ region, kubernetes, ecr, errors, loading, action, results, onRefresh, onPlanEcrCleanup }) {
