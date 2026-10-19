@@ -655,7 +655,7 @@ function DevOpsGovernance({
     />
 
     <section className="governance-grid">
-      <PipelinePanel />
+      <ArchitectureShowcase />
 
       <article className="panel governance-card">
         <div className="panel-heading"><div><h2><Tags size={16} /> Tagging & auto-parking governance</h2><p>Required tags: Owner, Environment, CostCenter</p></div></div>
@@ -714,23 +714,66 @@ function DevOpsGovernance({
   </div>;
 }
 
-function PipelinePanel() {
-  const steps = [
-    ['1. Push to GitHub', 'Every change to master starts the pipeline.'],
-    ['2. Automated tests', '26 tests run against a fake AWS account. If one fails, nothing is deployed.'],
-    ['3. Deploy', 'GitHub Actions ships the Docker image to AWS Elastic Beanstalk.'],
-    ['4. Health check', 'Beanstalk calls /api/health to confirm the new version is alive.'],
-  ];
+const ARCHITECTURES = [
+  {
+    id: 'serverless', name: 'Serverless web app',
+    summary: 'No servers to manage. You pay only when someone uses it, so it is the cheapest way to start.',
+    flow: [['Users', 'Browser'], ['CloudFront', 'CDN'], ['S3', 'Static site'], ['API Gateway', 'HTTP API'], ['Lambda', 'Code'], ['DynamoDB', 'Database']],
+    projects: ['Personal portfolio with a contact form', 'URL shortener', 'To-do or notes app', 'Event RSVP page'],
+    watch: 'Check DynamoDB capacity mode and Lambda memory size. Both are easy to over-provision.',
+  },
+  {
+    id: 'container', name: 'Containers with CI/CD',
+    summary: 'Package the app in Docker, test it, and ship it automatically on every push. This is how FinOps-Bharat runs.',
+    flow: [['GitHub', 'Code'], ['GitHub Actions', 'Test + build'], ['Elastic Beanstalk', 'Docker platform'], ['EC2', 'Instance'], ['CloudWatch', 'Logs']],
+    projects: ['Deploy a FastAPI or Node API', 'Blog or CMS backend', 'Team dashboard', 'Internal tool with a login'],
+    watch: 'A small always-on instance is billed every hour, even when nobody visits. Stop or delete test environments.',
+  },
+  {
+    id: 'event', name: 'Event-driven pipeline',
+    summary: 'Something happens (a file arrives), and a chain of small functions reacts to it.',
+    flow: [['S3', 'File upload'], ['Lambda', 'Process'], ['SQS', 'Queue'], ['Lambda', 'Worker'], ['DynamoDB', 'Results'], ['SNS', 'Notify']],
+    projects: ['Image resizer', 'Invoice or PDF reader', 'Log alert sender', 'Daily report generator'],
+    watch: 'Queues with no consumer and old buckets keep costing money. Review them regularly.',
+  },
+  {
+    id: 'three-tier', name: 'Three-tier web app',
+    summary: 'The classic layout: a load balancer, app servers that can scale, and a managed database.',
+    flow: [['Users', 'Browser'], ['Load Balancer', 'ALB'], ['EC2', 'Auto Scaling'], ['RDS', 'Database'], ['S3', 'Uploads']],
+    projects: ['WordPress site', 'Small online store', 'HR or leave-management tool', 'Student portal'],
+    watch: 'RDS instances, load balancers and NAT gateways run (and bill) around the clock. They are the usual waste.',
+  },
+  {
+    id: 'eks', name: 'Kubernetes on EKS',
+    summary: 'For many services that must scale and update independently. More power, more to manage.',
+    flow: [['GitHub Actions', 'Build'], ['ECR', 'Images'], ['EKS', 'Cluster'], ['Load Balancer', 'Ingress'], ['CloudWatch', 'Container Insights']],
+    projects: ['Microservices shop', 'Multi-tenant SaaS backend', 'ML model serving', 'Learning lab for Kubernetes'],
+    watch: 'The EKS control plane has a fixed monthly fee before any workload runs. Use it for learning only when you need it.',
+  },
+];
+
+function ArchitectureShowcase() {
+  const [activeId, setActiveId] = useState(ARCHITECTURES[0].id);
+  const active = ARCHITECTURES.find((item) => item.id === activeId) || ARCHITECTURES[0];
+  const box = { border: '1px solid rgba(128,128,128,.45)', borderRadius: 10, padding: '8px 12px', minWidth: 96, textAlign: 'center' };
   return <article className="panel governance-card governance-wide">
-    <div className="panel-heading"><div><h2><Workflow size={16} /> How FinOps-Bharat itself is delivered</h2><p>The DevOps pipeline behind this app</p></div></div>
-    {steps.map(([title, text]) => <p className="module-note" key={title}><strong>{title}</strong> {text}</p>)}
-    <p className="module-note">The Elastic Beanstalk environment is also written as code (CloudFormation, <code>infra/beanstalk.yml</code>), so it can be rebuilt from the repo with one command.</p>
-    <p className="module-note">
-      <a href="https://github.com/pooja-bhavani/finops-bharat/actions" target="_blank" rel="noreferrer">See pipeline runs</a>
-      {' · '}
-      <a href="https://github.com/pooja-bhavani/finops-bharat" target="_blank" rel="noreferrer">View the repository</a>
-    </p>
-    <p className="module-note">EKS cluster utilization and the ECR image audit are on the Containers &amp; ECR page.</p>
+    <div className="panel-heading"><div><h2><Workflow size={16} /> Architectures you can build on AWS</h2><p>Pick a pattern, see how the pieces connect, then pick a project to build with it.</p></div></div>
+    <div role="tablist" aria-label="Architecture patterns" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+      {ARCHITECTURES.map((item) => <button key={item.id} role="tab" aria-selected={item.id === active.id}
+        className={item.id === active.id ? 'primary-button' : 'secondary-button'} onClick={() => setActiveId(item.id)}>{item.name}</button>)}
+    </div>
+    <p className="module-note">{active.summary}</p>
+    <div role="img" aria-label={`${active.name}: ${active.flow.map((step) => step[0]).join(' to ')}`}
+      style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, margin: '12px 0' }}>
+      {active.flow.map(([service, role], index) => <div key={`${service}-${index}`} style={{ display: 'contents' }}>
+        {index > 0 && <span aria-hidden="true">→</span>}
+        <div style={box}><strong>{service}</strong><br /><small>{role}</small></div>
+      </div>)}
+    </div>
+    <p className="module-note"><strong>Projects you can build with this:</strong></p>
+    <ul>{active.projects.map((project) => <li key={project}>{project}</li>)}</ul>
+    <p className="module-note"><strong>Cost watch-out:</strong> {active.watch}</p>
+    <p className="module-note">Simplified teaching diagrams, not production blueprints. Add security groups, backups and monitoring before real use. EKS and ECR usage in your connected account is on the Containers &amp; ECR page.</p>
   </article>;
 }
 
