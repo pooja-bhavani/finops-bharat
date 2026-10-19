@@ -272,7 +272,16 @@ def get_aws_costs(request: Request):
                 ce_query["NextPageToken"] = next_token
             response = scanner.get_cost_and_usage(ce_query, ce_client=client)
             for period in response.get("ResultsByTime", []):
-                total = period["Total"]["UnblendedCost"]
+                groups = period.get("Groups", [])
+                total = period.get("Total", {}).get("UnblendedCost")
+                if total is None:
+                    # With GroupBy, Cost Explorer leaves "Total" empty. Add up the groups instead.
+                    if not groups:
+                        continue
+                    total = {
+                        "Amount": str(sum(Decimal(g["Metrics"]["UnblendedCost"]["Amount"]) for g in groups)),
+                        "Unit": groups[0]["Metrics"]["UnblendedCost"]["Unit"],
+                    }
                 period_currency = total["Unit"]
                 if currency is not None and period_currency != currency:
                     raise ValueError("Cost Explorer returned inconsistent currencies.")
