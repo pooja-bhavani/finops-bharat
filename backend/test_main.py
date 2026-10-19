@@ -23,3 +23,12 @@ def test_connect_status_starts_disconnected():
     body = client.get("/api/connect/status").json()
     assert body["connected"] is False
     assert body["server_account_enabled"] is False
+
+
+def test_health_reports_version():
+    from fastapi.testclient import TestClient
+    import backend.main as main_module
+
+    body = TestClient(main_module.app).get("/api/health").json()
+    assert body["status"] == "healthy"
+    assert isinstance(body["version"], str) and body["version"]

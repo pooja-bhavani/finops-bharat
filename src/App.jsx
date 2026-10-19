@@ -218,6 +218,10 @@ function App() {
   const [webhookSettingsOpen, setWebhookSettingsOpen] = useState(false);
   const [connection, setConnection] = useState({ connected: false, role_arn: '', server_account_enabled: true, loaded: false });
   const [connectRequest, setConnectRequest] = useState(0);
+  const [appVersion, setAppVersion] = useState('');
+  useEffect(() => {
+    fetch('/api/health').then((response) => (response.ok ? response.json() : null)).then((data) => setAppVersion(data?.version || '')).catch(() => {});
+  }, []);
   // Open-to-everyone mode: nothing is shown (and nothing is requested) until the visitor connects their own account.
   const needsConnection = connection.loaded && !connection.connected && !connection.server_account_enabled;
   const moduleRegion = region === 'all'
@@ -631,7 +635,7 @@ function App() {
         onOpenInventory={() => setPage('inventory')}
         onOpenOverview={() => setPage('overview')}
       />}
-      <footer className="footer"><span>FinOps-Bharat</span><span>Live AWS, GitHub & webhook integrations · review-only AWS actions</span></footer>
+      <footer className="footer"><span>FinOps-Bharat</span><span>Live AWS, GitHub & webhook integrations · review-only AWS actions{appVersion ? ` · version ${appVersion}` : ''}</span></footer>
     </main>
     {toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}
   </div>;
@@ -1217,6 +1221,8 @@ function Overview({
       </article>
     </section>
 
+    <SpendChanges costs={costs} />
+
     <section className="panel allocation-panel live-services">
       <div className="panel-heading"><div><h2>Spend by AWS service</h2><p>Cost Explorer · same six-month period</p></div></div>
       {serviceTotals.length
@@ -1226,6 +1232,33 @@ function Overview({
     <div className="disclaimer-line"><ShieldCheck size={15} /><span>Inventory and costs are live AWS responses. Cost Explorer amounts may be delayed and are not a per-resource savings calculation. No remediation actions are performed.</span></div>
     <AccountDetails account={account} />
   </div>;
+}
+
+function SpendChanges({ costs }) {
+  const months = costs?.monthly || [];
+  const byMonth = costs?.service_by_month;
+  if (months.length < 2 || !byMonth) return null;
+  const latest = months[months.length - 1];
+  const before = months[months.length - 2];
+  const now = byMonth[latest.month] || {};
+  const prev = byMonth[before.month] || {};
+  const rows = [...new Set([...Object.keys(now), ...Object.keys(prev)])]
+    .map((name) => ({ name, now: Number(now[name] || 0), before: Number(prev[name] || 0) }))
+    .map((row) => ({ ...row, diff: row.now - row.before }))
+    .filter((row) => Math.abs(row.diff) >= 0.005)
+    .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff))
+    .slice(0, 5);
+  const totalDiff = Number(latest.amount) - Number(before.amount);
+  const pct = Number(before.amount) > 0 ? (totalDiff / Number(before.amount)) * 100 : null;
+  const direction = (value) => (value > 0 ? 'up' : 'down');
+  return <section className="panel allocation-panel live-services">
+    <div className="panel-heading"><div><h2>What changed in your bill</h2><p>{before.month.slice(0, 7)} → {latest.month.slice(0, 7)} · biggest movers by service · Cost Explorer</p></div></div>
+    <div className="module-stat"><strong>{totalDiff >= 0 ? '+' : '−'}{formatMoney(Math.abs(totalDiff), costs.currency)}</strong><span>{pct == null ? 'total change' : `total ${direction(totalDiff)} ${Math.abs(pct).toFixed(0)}% vs the month before`}</span></div>
+    {rows.length
+      ? <div className="service-list">{rows.map((row) => <div className="service-row" key={row.name}><div className="service-label"><span>{row.name}</span><strong>{row.diff >= 0 ? '+' : '−'}{formatMoney(Math.abs(row.diff), costs.currency)} ({direction(row.diff)})</strong></div></div>)}</div>
+      : <p className="module-empty">No service changed between these two months.</p>}
+    <p className="module-note">Review the services that went up first. A rise is not always waste, so confirm with the owner before changing anything.</p>
+  </section>;
 }
 
 function LearningGuide({

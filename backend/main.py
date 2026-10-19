@@ -131,9 +131,19 @@ def get_scanner(request: Request) -> AWSFinOpsScanner:
         ) from exc
 
 
+def _app_version() -> str:
+    """Short git commit of the running deploy. CI writes backend/VERSION; falls back to APP_VERSION, then "dev"."""
+    version_file = Path(__file__).resolve().parent / "VERSION"
+    try:
+        text = version_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        text = ""
+    return (text or os.getenv("APP_VERSION", "") or "dev")[:7]
+
+
 @app.get("/api/health")
 def health_check():
-    return {"status": "healthy", "service": "FinOps-Bharat API"}
+    return {"status": "healthy", "service": "FinOps-Bharat API", "version": _app_version()}
 
 
 @app.get("/api/aws/account")
@@ -254,6 +264,7 @@ def get_aws_costs(request: Request):
         }
         monthly_by_date: dict[str, dict[str, str]] = {}
         service_totals: dict[str, Decimal] = {}
+        service_by_month: dict[str, dict[str, str]] = {}
         currency = None
         next_token = None
         while True:
@@ -275,6 +286,7 @@ def get_aws_costs(request: Request):
                 for group in period.get("Groups", []):
                     service = group["Keys"][0]
                     service_cost = Decimal(group["Metrics"]["UnblendedCost"]["Amount"])
+                    service_by_month.setdefault(month, {})[service] = str(service_cost)
                     service_totals[service] = service_totals.get(service, Decimal("0")) + service_cost
             next_token = response.get("NextPageToken")
             if not next_token:
@@ -306,6 +318,7 @@ def get_aws_costs(request: Request):
         "period_end_exclusive": end.isoformat(),
         "currency": currency,
         "monthly": [monthly_by_date[month] for month in sorted(monthly_by_date)],
+        "service_by_month": service_by_month,
         "services": [
             {"name": name, "amount": str(amount), "currency": currency}
             for name, amount in sorted(service_totals.items(), key=lambda item: item[1], reverse=True)
