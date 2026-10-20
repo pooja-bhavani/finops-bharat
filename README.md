@@ -185,3 +185,67 @@ If you created any IAM components or resources during testing:
 *Live Project Demo Available At:* [FinOps-Bharat Environment](http://finops-bharat-env.eba-6yvcbyqr.ap-south-1.elasticbeanstalk.com/)
 
 > **Note on the demo link:** The live demo is served over plain http:// for now (HTTPS isn’t set up yet). Some browsers open the address as https:// by default, which shows an error such as “This site can’t be reached” (ERR_CONNECTION_TIMED_OUT). If that happens, type or paste the full address including http://:
+
+## Cost anomaly alerts: step-by-step guide
+
+This section (DevOps & governance page) helps you get a message in Slack when your AWS bill suddenly jumps, instead of finding out at the end of the month. The setup has three parts. Parts A and B take about 5 minutes.
+
+### Part A: get a Slack webhook link
+
+1. Open [api.slack.com/apps](https://api.slack.com/apps) and sign in to your Slack workspace. Click **Create New App**, then choose **From scratch**.
+2. Type any app name, for example "FinOps alerts". Pick your workspace and click **Create App**.
+3. In the left menu click **Incoming Webhooks**, then switch **Activate Incoming Webhooks** to On.
+4. Scroll down and click **Add New Webhook to Workspace**. Choose the channel where alerts should appear and click **Allow**.
+5. Copy the **Webhook URL** that now appears. It starts with `https://hooks.slack.com/services/`.
+
+### Part B: test the link in FinOps-Bharat
+
+6. Open **DevOps & governance** and find the **Cost anomaly alerts** card. Click **Webhook settings**.
+7. Paste the URL and click **Send test message**.
+8. You should see "Test delivered to hooks.slack.com" in the app, and a short test message in your Slack channel.
+9. Close the window. The URL is used for this one test and is not saved. Do not share it or put it in a screenshot. Anyone with it can post to your channel.
+
+### Part C: get real alerts when your bill jumps (done in your own AWS console)
+
+10. Open the AWS console, search for **Billing and Cost Management** and click **Cost Anomaly Detection**.
+11. Click **Create monitor** and choose the **AWS services** type.
+12. Create an **alert subscription**. Set how large a jump should trigger it, and choose where AWS sends it (an email address or an SNS topic).
+
+### Good to know
+
+- The app accepts only HTTPS Slack and Microsoft Teams addresses. For Teams, only the older Office 365 webhook addresses (`webhook.office.com`) work for now. Newer Teams Workflows links are not supported yet.
+- The alert list in the app stays empty for visitors on purpose, so nobody ever sees another person's alerts.
+- The app can test your Slack link today. The real anomaly alerts in Part C are set up directly in AWS. Forwarding each visitor's own alerts into their own Slack is on the list of what's next.
+- This app never changes anything in your AWS account. It only reads, and the test message goes to your own channel.
+
+## Cost anomaly alerts: step-by-step guide
+
+This section (DevOps & governance page) helps you get a message in Slack when your AWS bill suddenly jumps, instead of finding out at the end of the month. The setup has three parts. Parts A and B take about 5 minutes.
+
+### Part A: get a Slack webhook link
+
+1. Open [api.slack.com/apps](https://api.slack.com/apps) and sign in to your Slack workspace. Click **Create New App**, then choose **From scratch**.
+2. Type any app name, for example "FinOps alerts". Pick your workspace and click **Create App**.
+3. In the left menu click **Incoming Webhooks**, then switch **Activate Incoming Webhooks** to On.
+4. Scroll down and click **Add New Webhook to Workspace**. Choose the channel where alerts should appear and click **Allow**.
+5. Copy the **Webhook URL** that now appears. It starts with `https://hooks.slack.com/services/`.
+
+### Part B: test the link in FinOps-Bharat
+
+6. Open **DevOps & governance** and find the **Cost anomaly alerts** card. Click **Webhook settings**.
+7. Paste the URL and click **Send test message**.
+8. You should see "Test delivered to hooks.slack.com" in the app, and a short test message in your Slack channel.
+9. Close the window. The URL is used for this one test and is not saved. Do not share it or put it in a screenshot. Anyone with it can post to your channel.
+
+### Part C: get real alerts when your bill jumps (done in your own AWS console)
+
+10. Open the AWS console, search for **Billing and Cost Management** and click **Cost Anomaly Detection**.
+11. Click **Create monitor** and choose the **AWS services** type.
+12. Create an **alert subscription**. Set how large a jump should trigger it, and choose where AWS sends it (an email address or an SNS topic).
+
+### Good to know
+
+- The app accepts only HTTPS Slack and Microsoft Teams addresses. For Teams, only the older Office 365 webhook addresses (`webhook.office.com`) work for now. Newer Teams Workflows links are not supported yet.
+- The alert list in the app stays empty for visitors on purpose, so nobody ever sees another person's alerts.
+- The app can test your Slack link today. The real anomaly alerts in Part C are set up directly in AWS. Forwarding each visitor's own alerts into their own Slack is on the list of what's next.
+- This app never changes anything in your AWS account. It only reads, and the test message goes to your own channel.
