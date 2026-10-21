@@ -250,7 +250,12 @@ This section (DevOps & governance page) helps you get a message in Slack when yo
 - The app can test your Slack link today. The real anomaly alerts in Part C are set up directly in AWS. Forwarding each visitor's own alerts into their own Slack is on the list of what's next.
 - This app never changes anything in your AWS account. It only reads, and the test message goes to your own channel.
 
+---
+
+### Tech Used to build this App
 <img width="1448" height="804" alt="Screenshot 2026-10-22 at 2 21 52 am" src="https://github.com/user-attachments/assets/8d95bfd4-35be-4a1f-aeb7-c5b0276b3a99" />
 
-*Thank You TrainWithShubham For Organizing This Hackathon Enjoyed Building This Application And Got To Learn More New Things.*
----
+--- 
+
+**Thank You TrainWithShubham For Organizing This Hackathon Enjoyed Building This Application And Got To Learn More New Things.**
+
